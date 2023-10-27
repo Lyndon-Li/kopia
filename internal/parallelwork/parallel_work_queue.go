@@ -63,7 +63,10 @@ func (v *Queue) Process(ctx context.Context, workers int) error {
 
 	eg, ctx := errgroup.WithContext(ctx)
 
-	for i := 0; i < workers; i++ {
+	frontConsumers := workers / 2
+	backConsumers := workers - frontConsumers
+
+	for i := 0; i < frontConsumers; i++ {
 		eg.Go(func() error {
 			for {
 				select {
@@ -73,7 +76,33 @@ func (v *Queue) Process(ctx context.Context, workers int) error {
 					return ctx.Err()
 
 				default:
-					callback := v.dequeue(ctx)
+					callback := v.dequeue(ctx, true)
+					if callback == nil {
+						// no more work, shut down.
+						return nil
+					}
+
+					err := callback()
+					v.completed(ctx)
+					if err != nil {
+						return err
+					}
+				}
+			}
+		})
+	}
+
+	for i := 0; i < backConsumers; i++ {
+		eg.Go(func() error {
+			for {
+				select {
+				case <-ctx.Done():
+					// context canceled - some other worker returned an error.
+					//nolint:wrapcheck
+					return ctx.Err()
+
+				default:
+					callback := v.dequeue(ctx, false)
 					if callback == nil {
 						// no more work, shut down.
 						return nil
@@ -93,7 +122,7 @@ func (v *Queue) Process(ctx context.Context, workers int) error {
 	return eg.Wait()
 }
 
-func (v *Queue) dequeue(ctx context.Context) CallbackFunc {
+func (v *Queue) dequeue(ctx context.Context, front bool) CallbackFunc {
 	v.monitor.L.Lock()
 	defer v.monitor.L.Unlock()
 
@@ -110,10 +139,16 @@ func (v *Queue) dequeue(ctx context.Context) CallbackFunc {
 	v.activeWorkerCount++
 	v.maybeReportProgress(ctx)
 
-	front := v.queueItems.Front()
-	v.queueItems.Remove(front)
+	var item *list.Element
+	if front {
+		item = v.queueItems.Front()
+	} else {
+		item = v.queueItems.Back()
+	}
 
-	return front.Value.(CallbackFunc) //nolint:forcetypeassert
+	v.queueItems.Remove(item)
+
+	return item.Value.(CallbackFunc) //nolint:forcetypeassert
 }
 
 func (v *Queue) completed(ctx context.Context) {
