@@ -235,6 +235,8 @@ func concatenateParts(ctx context.Context, rep repo.RepositoryWriter, name strin
 }
 
 func (u *Uploader) uploadFileData(ctx context.Context, parentCheckpointRegistry *checkpointRegistry, f fs.File, fname string, offset, length int64, compressor compression.Name) (*snapshot.DirEntry, error) {
+	uploadLog(ctx).Infof("starting file %s", fname)
+
 	file, err := f.Open(ctx)
 	if err != nil {
 		return nil, errors.Wrap(err, "unable to open file")
@@ -294,6 +296,8 @@ func (u *Uploader) uploadFileData(ctx context.Context, parentCheckpointRegistry 
 
 	atomic.AddInt32(&u.stats.TotalFileCount, 1)
 	atomic.AddInt64(&u.stats.TotalFileSize, de.FileSize)
+
+	uploadLog(ctx).Infof("finishing file %s", fname)
 
 	return de, nil
 }
