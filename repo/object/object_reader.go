@@ -35,6 +35,20 @@ func VerifyObject(ctx context.Context, cr contentReader, oid ID) ([]content.ID, 
 	return tracker.contentIDs(), nil
 }
 
+func GetObjectEntries(ctx context.Context, r contentReader, objectID ID) ([]IndirectObjectEntry, error) {
+	reader, err := openAndAssertLength(ctx, r, objectID, -1)
+	if err != nil {
+		return nil, err
+	}
+
+	objReader := reader.(*objectReader)
+	if objReader != nil {
+		return objReader.seekTable, nil
+	} else {
+		return []IndirectObjectEntry{{0, reader.Length(), objectID}}, nil
+	}
+}
+
 type objectReader struct {
 	// objectReader implements io.Reader, but needs context to read from repository
 	ctx context.Context //nolint:containedctx
