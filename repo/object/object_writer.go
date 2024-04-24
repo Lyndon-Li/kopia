@@ -182,6 +182,13 @@ func (w *objectWriter) WriteEntries(entries []IndirectObjectEntry, offset int64)
 		return errors.Errorf("cannot skip extents, current %v, request %v", w.currentPosition, offset)
 	}
 
+	tailLength := w.buffer.Length()
+	if tailLength > 0 {
+		if err := w.flushBuffer(); err != nil {
+			return errors.Wrapf(err, "error to flush tail, length %v", tailLength)
+		}
+	}
+
 	w.indirectIndexGrowMutex.Lock()
 	for _, entry := range entries {
 		chunkID := len(w.indirectIndex)
