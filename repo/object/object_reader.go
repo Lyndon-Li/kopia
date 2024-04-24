@@ -120,6 +120,10 @@ func (r *objectReader) Read(buffer []byte) (int, error) {
 func (r *objectReader) openCurrentChunk() error {
 	st := r.seekTable[r.currentChunkIndex]
 
+	if r.currentPosition < st.Start {
+		return errors.Errorf("wrong chunk position, want %v, start %v", r.currentPosition, st.Start)
+	}
+
 	rd, err := openAndAssertLength(r.ctx, r.cr, st.Object, st.Length)
 	if err != nil {
 		return err
@@ -132,8 +136,10 @@ func (r *objectReader) openCurrentChunk() error {
 		return errors.Wrap(err, "error reading chunk")
 	}
 
-	r.currentChunkData = b
-	r.currentChunkPosition = 0
+	startPos := int(r.currentPosition - st.Start)
+
+	r.currentChunkData = b[startPos:]
+	r.currentChunkPosition = startPos
 
 	return nil
 }

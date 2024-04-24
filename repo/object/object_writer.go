@@ -23,6 +23,7 @@ const indirectContentPrefix = "x"
 // of written data.
 type Writer interface {
 	io.WriteCloser
+	io.WriterAt
 
 	// Checkpoint returns ID of an object consisting of all contents written to storage so far.
 	// This may not include some data buffered in the writer.
@@ -31,6 +32,8 @@ type Writer interface {
 
 	// Result returns object ID representing all bytes written to the writer.
 	Result() (ID, error)
+
+	WriteEntries([]IndirectObjectEntry, int64) error
 }
 
 type contentIDTracker struct {
@@ -135,6 +138,61 @@ func (w *objectWriter) Write(data []byte) (n int, err error) {
 	}
 
 	return dataLen, nil
+}
+
+func (w *objectWriter) WriteAt(data []byte, offset int64) (n int, err error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if w.currentPosition > offset {
+		return -1, errors.Errorf("cannot write backwards, current %v, request %v", w.currentPosition, offset)
+	}
+
+	w.currentPosition = offset
+
+	dataLen := len(data)
+	w.totalLength += int64(dataLen)
+
+	for len(data) > 0 {
+		n := w.splitter.NextSplitPoint(data)
+		if n < 0 {
+			// no split points in the buffer
+			w.buffer.Append(data)
+			break
+		}
+
+		// found a split point after `n` bytes, write first n bytes then flush and repeat with the remainder.
+		w.buffer.Append(data[0:n])
+
+		if err := w.flushBuffer(); err != nil {
+			return 0, err
+		}
+
+		data = data[n:]
+	}
+
+	return dataLen, nil
+}
+
+func (w *objectWriter) WriteEntries(entries []IndirectObjectEntry, offset int64) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if w.currentPosition < offset {
+		return errors.Errorf("cannot skip extents, current %v, request %v", w.currentPosition, offset)
+	}
+
+	w.indirectIndexGrowMutex.Lock()
+	for _, entry := range entries {
+		chunkID := len(w.indirectIndex)
+		w.indirectIndex = append(w.indirectIndex, IndirectObjectEntry{})
+		w.indirectIndex[chunkID].Start = entry.Start
+		w.indirectIndex[chunkID].Length = entry.Length
+		w.indirectIndex[chunkID].Object = entry.Object
+	}
+	w.indirectIndexGrowMutex.Unlock()
+
+	return nil
 }
 
 func (w *objectWriter) flushBuffer() error {
