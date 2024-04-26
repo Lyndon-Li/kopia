@@ -157,7 +157,7 @@ func (w *objectWriter) WriteAt(data []byte, offset int64) (n int, err error) {
 	}
 
 	if w.currentPosition < offset {
-		entries, err := w.getParentEntries(offset)
+		entries, err := w.getEntriesToClone(offset)
 		if err != nil {
 			return -1, errors.Errorf("error to get parent entries for offset %v", offset)
 		}
@@ -172,7 +172,7 @@ func (w *objectWriter) WriteAt(data []byte, offset int64) (n int, err error) {
 	return w.writeUnLocked(data)
 }
 
-func (w *objectWriter) getParentEntries(off int64) ([]IndirectObjectEntry, error) {
+func (w *objectWriter) getEntriesToClone(off int64) ([]IndirectObjectEntry, error) {
 	if w.parentEntries[w.curParentEntryIndex].Start >= off {
 		return nil, errors.Errorf("current entry starting offset %v is ahead of requested offset %v, entry index %v", w.curParentEntryIndex, w.parentEntries[w.curParentEntryIndex].Start, off)
 	}
