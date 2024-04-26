@@ -71,11 +71,6 @@ func (r *apiServerRepository) VerifyObject(ctx context.Context, id object.ID) ([
 	return object.VerifyObject(ctx, r, id)
 }
 
-func (r *apiServerRepository) GetObjectEntries(ctx context.Context, id object.ID) ([]object.IndirectObjectEntry, error) {
-	//nolint:wrapcheck
-	return object.GetObjectEntries(ctx, r, id)
-}
-
 func (r *apiServerRepository) GetManifest(ctx context.Context, id manifest.ID, data interface{}) (*manifest.EntryMetadata, error) {
 	var mm remoterepoapi.ManifestWithMetadata
 

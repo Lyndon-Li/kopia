@@ -32,8 +32,6 @@ type Writer interface {
 
 	// Result returns object ID representing all bytes written to the writer.
 	Result() (ID, error)
-
-	WriteEntries([]IndirectObjectEntry, int64) error
 }
 
 type contentIDTracker struct {
@@ -95,6 +93,8 @@ type objectWriter struct {
 
 	contentWriteErrorMutex sync.Mutex
 	contentWriteError      error // stores async write error, propagated in Result()
+	parentEntries          []IndirectObjectEntry
+	curParentEntryIndex    int
 }
 
 func (w *objectWriter) Close() error {
@@ -116,6 +116,10 @@ func (w *objectWriter) Write(data []byte) (n int, err error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
+	return w.writeUnLocked(data)
+}
+
+func (w *objectWriter) writeUnLocked(data []byte) (n int, err error) {
 	dataLen := len(data)
 	w.totalLength += int64(dataLen)
 
@@ -144,44 +148,53 @@ func (w *objectWriter) WriteAt(data []byte, offset int64) (n int, err error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
+	if w.parentEntries == nil {
+		return -1, errors.New("don't support WriteAt without valid parent object")
+	}
+
 	if w.currentPosition > offset {
 		return -1, errors.Errorf("cannot write backwards, current %v, request %v", w.currentPosition, offset)
 	}
 
-	w.currentPosition = offset
+	if w.currentPosition < offset {
+		entries, err := w.getParentEntries(offset)
+		if err != nil {
+			return -1, errors.Errorf("error to get parent entries for offset %v", offset)
+		}
 
-	dataLen := len(data)
-	w.totalLength += int64(dataLen)
+		if err := w.writeEntriesUnLocked(entries); err != nil {
+			return -1, errors.Errorf("error to write entries from %v to %v", w.currentPosition, offset)
+		}
 
-	for len(data) > 0 {
-		n := w.splitter.NextSplitPoint(data)
-		if n < 0 {
-			// no split points in the buffer
-			w.buffer.Append(data)
+		w.currentPosition = offset
+	}
+
+	return w.writeUnLocked(data)
+}
+
+func (w *objectWriter) getParentEntries(off int64) ([]IndirectObjectEntry, error) {
+	if w.parentEntries[w.curParentEntryIndex].Start >= off {
+		return nil, errors.Errorf("current entry starting offset %v is ahead of requested offset %v, entry index %v", w.curParentEntryIndex, w.parentEntries[w.curParentEntryIndex].Start, off)
+	}
+
+	entries := []IndirectObjectEntry{}
+	for w.curParentEntryIndex < len(w.parentEntries) {
+		if w.parentEntries[w.curParentEntryIndex].Start >= off {
 			break
 		}
 
-		// found a split point after `n` bytes, write first n bytes then flush and repeat with the remainder.
-		w.buffer.Append(data[0:n])
-
-		if err := w.flushBuffer(); err != nil {
-			return 0, err
+		if w.parentEntries[w.curParentEntryIndex].Start+w.parentEntries[w.curParentEntryIndex].Length <= w.currentPosition {
+			continue
 		}
 
-		data = data[n:]
+		entries = append(entries, w.parentEntries[w.curParentEntryIndex])
+		w.curParentEntryIndex++
 	}
 
-	return dataLen, nil
+	return entries, nil
 }
 
-func (w *objectWriter) WriteEntries(entries []IndirectObjectEntry, offset int64) error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	if w.currentPosition < offset {
-		return errors.Errorf("cannot skip extents, current %v, request %v", w.currentPosition, offset)
-	}
-
+func (w *objectWriter) writeEntriesUnLocked(entries []IndirectObjectEntry) error {
 	tailLength := w.buffer.Length()
 	if tailLength > 0 {
 		if err := w.flushBuffer(); err != nil {
@@ -399,8 +412,9 @@ func writeIndirectObject(w io.Writer, entries []IndirectObjectEntry) error {
 
 // WriterOptions can be passed to Repository.NewWriter().
 type WriterOptions struct {
-	Description string
-	Prefix      content.IDPrefix // empty string or a single-character ('g'..'z')
-	Compressor  compression.Name
-	AsyncWrites int // allow up to N content writes to be asynchronous
+	Description  string
+	Prefix       content.IDPrefix // empty string or a single-character ('g'..'z')
+	Compressor   compression.Name
+	AsyncWrites  int // allow up to N content writes to be asynchronous
+	ParentObject *ID
 }

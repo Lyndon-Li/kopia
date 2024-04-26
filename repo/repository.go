@@ -29,7 +29,6 @@ var tracer = otel.Tracer("kopia/repository")
 type Repository interface {
 	OpenObject(ctx context.Context, id object.ID) (object.Reader, error)
 	VerifyObject(ctx context.Context, id object.ID) ([]content.ID, error)
-	GetObjectEntries(ctx context.Context, id object.ID) ([]object.IndirectObjectEntry, error)
 	GetManifest(ctx context.Context, id manifest.ID, data interface{}) (*manifest.EntryMetadata, error)
 	FindManifests(ctx context.Context, labels map[string]string) ([]*manifest.EntryMetadata, error)
 	ContentInfo(ctx context.Context, contentID content.ID) (content.Info, error)
@@ -201,11 +200,6 @@ func (r *directRepository) OpenObject(ctx context.Context, id object.ID) (object
 func (r *directRepository) VerifyObject(ctx context.Context, id object.ID) ([]content.ID, error) {
 	//nolint:wrapcheck
 	return object.VerifyObject(ctx, r.cmgr, id)
-}
-
-func (r *directRepository) GetObjectEntries(ctx context.Context, id object.ID) ([]object.IndirectObjectEntry, error) {
-	//nolint:wrapcheck
-	return object.GetObjectEntries(ctx, r.cmgr, id)
 }
 
 // GetManifest returns the given manifest data and metadata.

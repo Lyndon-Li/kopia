@@ -35,7 +35,7 @@ func VerifyObject(ctx context.Context, cr contentReader, oid ID) ([]content.ID, 
 	return tracker.contentIDs(), nil
 }
 
-func GetObjectEntries(ctx context.Context, r contentReader, objectID ID) ([]IndirectObjectEntry, error) {
+func getObjectEntries(ctx context.Context, r contentReader, objectID ID) ([]IndirectObjectEntry, error) {
 	reader, err := openAndAssertLength(ctx, r, objectID, -1)
 	if err != nil {
 		return nil, err

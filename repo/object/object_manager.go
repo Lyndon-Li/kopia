@@ -75,6 +75,15 @@ func (om *Manager) NewWriter(ctx context.Context, opt WriterOptions) Writer {
 	w.buffer.Reset()
 	w.contentWriteError = nil
 
+	if opt.ParentObject != nil {
+		entries, err := getObjectEntries(ctx, om.contentMgr, *opt.ParentObject)
+		if err != nil {
+			log(ctx).Errorf("Failed to get parent object entries, parent object %v", *opt.ParentObject)
+		} else {
+			w.parentEntries = entries
+		}
+	}
+
 	return w
 }
 

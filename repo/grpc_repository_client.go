@@ -233,11 +233,6 @@ func (r *grpcRepositoryClient) VerifyObject(ctx context.Context, id object.ID) (
 	return object.VerifyObject(ctx, r, id)
 }
 
-func (r *grpcRepositoryClient) GetObjectEntries(ctx context.Context, id object.ID) ([]object.IndirectObjectEntry, error) {
-	//nolint:wrapcheck
-	return object.GetObjectEntries(ctx, r, id)
-}
-
 func (r *grpcInnerSession) initializeSession(ctx context.Context, purpose string, readOnly bool) (*apipb.RepositoryParameters, error) {
 	for resp := range r.sendRequest(ctx, &apipb.SessionRequest{
 		Request: &apipb.SessionRequest_InitializeSession{
