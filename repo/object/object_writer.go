@@ -226,6 +226,7 @@ func (w *objectWriter) writeEntriesUnLocked(entries []IndirectObjectEntry) error
 		w.indirectIndex[chunkID].Object = entry.Object
 		w.indirectIndex[chunkID].ChunkPos = entry.ChunkPos
 		w.indirectIndex[chunkID].ChunkSize = entry.ChunkSize
+		w.currentPosition += entry.Length
 	}
 	w.indirectIndexGrowMutex.Unlock()
 
