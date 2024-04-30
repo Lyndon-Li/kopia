@@ -179,7 +179,12 @@ func (w *objectWriter) WriteAt(data []byte, offset int64) (n int, err error) {
 		w.currentPosition = offset
 	}
 
-	return w.writeUnLocked(data)
+	if data != nil {
+		return w.writeUnLocked(data)
+	} else {
+		return 0, nil
+	}
+
 }
 
 func (w *objectWriter) getEntriesToClone(off int64) ([]IndirectObjectEntry, error) {
