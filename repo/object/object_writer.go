@@ -162,6 +162,16 @@ func (w *objectWriter) WriteAt(data []byte, offset int64) (n int, err error) {
 			return -1, errors.Errorf("error to get parent entries for offset %v", offset)
 		}
 
+		if w.currentPosition > entries[0].Start {
+			entries[0].ChunkPos += (w.currentPosition - entries[0].Start)
+			entries[0].Length -= (w.currentPosition - entries[0].Start + 1)
+		}
+
+		lastEntry := entries[len(entries)-1]
+		if offset > lastEntry.Start {
+			entries[len(entries)-1].Length = offset - lastEntry.Start
+		}
+
 		if err := w.writeEntriesUnLocked(entries); err != nil {
 			return -1, errors.Errorf("error to write entries from %v to %v", w.currentPosition, offset)
 		}

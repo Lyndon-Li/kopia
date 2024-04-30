@@ -45,7 +45,7 @@ func getObjectEntries(ctx context.Context, r contentReader, objectID ID) ([]Indi
 	if objReader != nil {
 		return objReader.seekTable, nil
 	} else {
-		return []IndirectObjectEntry{{0, reader.Length(), objectID}}, nil
+		return []IndirectObjectEntry{{0, reader.Length(), objectID, 0}}, nil
 	}
 }
 
@@ -120,10 +120,6 @@ func (r *objectReader) Read(buffer []byte) (int, error) {
 func (r *objectReader) openCurrentChunk() error {
 	st := r.seekTable[r.currentChunkIndex]
 
-	if r.currentPosition < st.Start {
-		return errors.Errorf("wrong chunk position, want %v, start %v", r.currentPosition, st.Start)
-	}
-
 	rd, err := openAndAssertLength(r.ctx, r.cr, st.Object, st.Length)
 	if err != nil {
 		return err
@@ -131,15 +127,19 @@ func (r *objectReader) openCurrentChunk() error {
 
 	defer rd.Close() //nolint:errcheck
 
+	if st.ChunkPos != 0 {
+		if _, err := rd.Seek(st.ChunkPos, io.SeekStart); err != nil {
+			return errors.Wrapf(err, "error seeking chunk to %v", st.ChunkPos)
+		}
+	}
+
 	b := make([]byte, st.Length)
-	if _, err := io.ReadFull(rd, b); err != nil {
+	if _, err := rd.Read(b); err != nil {
 		return errors.Wrap(err, "error reading chunk")
 	}
 
-	startPos := int(r.currentPosition - st.Start)
-
-	r.currentChunkData = b[startPos:]
-	r.currentChunkPosition = startPos
+	r.currentChunkData = b
+	r.currentChunkPosition = 0
 
 	return nil
 }
