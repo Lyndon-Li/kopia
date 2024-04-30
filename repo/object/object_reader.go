@@ -45,7 +45,7 @@ func getObjectEntries(ctx context.Context, r contentReader, objectID ID) ([]Indi
 	if objReader != nil {
 		return objReader.seekTable, nil
 	} else {
-		return []IndirectObjectEntry{{0, reader.Length(), objectID, 0}}, nil
+		return []IndirectObjectEntry{{0, reader.Length(), objectID, 0, reader.Length()}}, nil
 	}
 }
 
@@ -120,7 +120,7 @@ func (r *objectReader) Read(buffer []byte) (int, error) {
 func (r *objectReader) openCurrentChunk() error {
 	st := r.seekTable[r.currentChunkIndex]
 
-	rd, err := openAndAssertLength(r.ctx, r.cr, st.Object, st.Length)
+	rd, err := openAndAssertLength(r.ctx, r.cr, st.Object, st.ChunkSize)
 	if err != nil {
 		return err
 	}

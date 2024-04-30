@@ -2,10 +2,11 @@ package object
 
 // IndirectObjectEntry represents an entry in indirect object stream.
 type IndirectObjectEntry struct {
-	Start    int64 `json:"s,omitempty"`
-	Length   int64 `json:"l,omitempty"`
-	Object   ID    `json:"o,omitempty"`
-	ChunkPos int64 `json:"c,omitempty"`
+	Start     int64 `json:"s,omitempty"`
+	Length    int64 `json:"l,omitempty"`
+	Object    ID    `json:"o,omitempty"`
+	ChunkPos  int64 `json:"c,omitempty"`
+	ChunkSize int64 `json:"k,omitempty"`
 }
 
 func (i *IndirectObjectEntry) endOffset() int64 {

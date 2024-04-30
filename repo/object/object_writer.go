@@ -224,6 +224,8 @@ func (w *objectWriter) writeEntriesUnLocked(entries []IndirectObjectEntry) error
 		w.indirectIndex[chunkID].Start = entry.Start
 		w.indirectIndex[chunkID].Length = entry.Length
 		w.indirectIndex[chunkID].Object = entry.Object
+		w.indirectIndex[chunkID].ChunkPos = entry.ChunkPos
+		w.indirectIndex[chunkID].ChunkSize = entry.ChunkSize
 	}
 	w.indirectIndexGrowMutex.Unlock()
 
@@ -239,6 +241,8 @@ func (w *objectWriter) flushBuffer() error {
 	w.indirectIndex = append(w.indirectIndex, IndirectObjectEntry{})
 	w.indirectIndex[chunkID].Start = w.currentPosition
 	w.indirectIndex[chunkID].Length = int64(length)
+	w.indirectIndex[chunkID].ChunkPos = 0
+	w.indirectIndex[chunkID].ChunkSize = int64(length)
 	w.currentPosition += int64(length)
 	w.indirectIndexGrowMutex.Unlock()
 
