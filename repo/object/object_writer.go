@@ -148,10 +148,6 @@ func (w *objectWriter) WriteAt(data []byte, offset int64) (n int, err error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	if w.parentEntries == nil {
-		return -1, errors.New("don't support WriteAt without valid parent object")
-	}
-
 	if w.currentPosition > offset {
 		return -1, errors.Errorf("cannot write backwards, current %v, request %v", w.currentPosition, offset)
 	}
@@ -184,18 +180,6 @@ func (w *objectWriter) WriteAt(data []byte, offset int64) (n int, err error) {
 		w.writeEntriesUnLocked(entries)
 	}
 
-	if w.currentPosition < offset && w.curParentEntryIndex == len(w.parentEntries) {
-		entries := []IndirectObjectEntry{}
-		entries = append(entries, IndirectObjectEntry{
-			Start:     w.currentPosition,
-			Length:    offset - w.currentPosition,
-			ChunkSize: offset - w.currentPosition,
-			AllZero:   true,
-		})
-
-		w.writeEntriesUnLocked(entries)
-	}
-
 	if w.currentPosition != offset {
 		return -1, errors.Errorf("unexpected position %v vs. %v", w.currentPosition, offset)
 	}
@@ -209,21 +193,36 @@ func (w *objectWriter) WriteAt(data []byte, offset int64) (n int, err error) {
 }
 
 func (w *objectWriter) getEntriesToClone(off int64) ([]IndirectObjectEntry, error) {
-	if w.parentEntries[w.curParentEntryIndex].Start >= off {
-		return nil, errors.Errorf("current entry starting offset %v is ahead of requested offset %v, entry index %v", w.curParentEntryIndex, w.parentEntries[w.curParentEntryIndex].Start, off)
+	entries := []IndirectObjectEntry{}
+	lastOffset := w.currentPosition
+
+	if w.parentEntries != nil && w.curParentEntryIndex < len(w.parentEntries) {
+		if w.parentEntries[w.curParentEntryIndex].Start >= off {
+			return nil, errors.Errorf("current entry starting offset %v is ahead of requested offset %v, entry index %v", w.curParentEntryIndex, w.parentEntries[w.curParentEntryIndex].Start, off)
+		}
+
+		for w.curParentEntryIndex < len(w.parentEntries) {
+			lastOffset = w.parentEntries[w.curParentEntryIndex].endOffset()
+
+			if lastOffset > w.currentPosition {
+				entries = append(entries, w.parentEntries[w.curParentEntryIndex])
+			}
+
+			if lastOffset >= off {
+				break
+			}
+
+			w.curParentEntryIndex++
+		}
 	}
 
-	entries := []IndirectObjectEntry{}
-	for w.curParentEntryIndex < len(w.parentEntries) {
-		if w.parentEntries[w.curParentEntryIndex].Start+w.parentEntries[w.curParentEntryIndex].Length > w.currentPosition {
-			entries = append(entries, w.parentEntries[w.curParentEntryIndex])
-		}
-
-		if w.parentEntries[w.curParentEntryIndex].Start+w.parentEntries[w.curParentEntryIndex].Length > off {
-			break
-		}
-
-		w.curParentEntryIndex++
+	if lastOffset < off {
+		entries = append(entries, IndirectObjectEntry{
+			Start:     lastOffset,
+			Length:    off - lastOffset,
+			ChunkSize: off - lastOffset,
+			AllZero:   true,
+		})
 	}
 
 	return entries, nil
