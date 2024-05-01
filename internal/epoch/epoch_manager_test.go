@@ -102,7 +102,7 @@ func newTestEnv(t *testing.T) *epochManagerTestEnv {
 		EpochAdvanceOnCountThreshold:          15,
 		EpochAdvanceOnTotalSizeBytesThreshold: 20 << 20,
 		DeleteParallelism:                     1,
-	}}, te.compact, testlogging.NewTestLogger(t), te.ft.NowFunc(), true)
+	}}, te.compact, testlogging.NewTestLogger(t), te.ft.NowFunc())
 	te.mgr = m
 	te.faultyStorage = fs
 	te.data = data
@@ -121,7 +121,7 @@ func (te *epochManagerTestEnv) another() *epochManagerTestEnv {
 		faultyStorage: te.faultyStorage,
 	}
 
-	te2.mgr = NewManager(te2.st, te.mgr.paramProvider, te2.compact, te.mgr.log, te.mgr.timeFunc, true)
+	te2.mgr = NewManager(te2.st, te.mgr.paramProvider, te2.compact, te.mgr.log, te.mgr.timeFunc)
 
 	return te2
 }
@@ -385,7 +385,7 @@ func TestIndexEpochManager_NoCompactionInReadOnly(t *testing.T) {
 	}
 
 	// Set new epoch manager to read-only to ensure we don't get stuck.
-	te2.mgr = NewManager(te2.st, te.mgr.paramProvider, te2.compact, te.mgr.log, te.mgr.timeFunc, true)
+	te2.mgr = NewManager(te2.st, te.mgr.paramProvider, te2.compact, te.mgr.log, te.mgr.timeFunc)
 
 	// Use assert.Eventually here so we'll exit the test early instead of getting
 	// stuck until the timeout.
@@ -635,7 +635,6 @@ func TestMaybeAdvanceEpoch(t *testing.T) {
 	te := newTestEnv(t)
 
 	// Disable automatic epoch advancement and compaction to build up state
-	te.mgr.allowCleanupWritesOnIndexLoad = false
 	te.mgr.compact = func(context.Context, []blob.ID, blob.ID) error {
 		return nil
 	}
@@ -709,7 +708,6 @@ func TestMaybeAdvanceEpoch_Error(t *testing.T) {
 	te := newTestEnv(t)
 
 	// Disable automatic epoch advancement and compaction to build up state
-	te.mgr.allowCleanupWritesOnIndexLoad = false
 	te.mgr.compact = func(context.Context, []blob.ID, blob.ID) error {
 		return nil
 	}
@@ -952,7 +950,6 @@ func TestMaybeCompactSingleEpoch(t *testing.T) {
 
 	te := newTestEnv(t)
 	ctx := testlogging.Context(t)
-	te.mgr.allowCleanupWritesOnIndexLoad = false
 
 	p, err := te.mgr.getParameters(ctx)
 	require.NoError(t, err)
@@ -1056,7 +1053,6 @@ func TestMaybeGenerateRangeCheckpoint_FailToReadState(t *testing.T) {
 	t.Parallel()
 
 	te := newTestEnv(t)
-	te.mgr.allowCleanupWritesOnIndexLoad = false
 	ctx := testlogging.Context(t)
 
 	ctx, cancel := context.WithCancel(ctx)
@@ -1072,7 +1068,6 @@ func TestMaybeGenerateRangeCheckpoint_CompactionError(t *testing.T) {
 	t.Parallel()
 
 	te := newTestEnv(t)
-	te.mgr.allowCleanupWritesOnIndexLoad = false
 	ctx := testlogging.Context(t)
 
 	p, err := te.mgr.getParameters(ctx)
@@ -1123,7 +1118,6 @@ func TestMaybeGenerateRangeCheckpoint_FromUncompactedEpochs(t *testing.T) {
 	t.Parallel()
 
 	te := newTestEnv(t)
-	te.mgr.allowCleanupWritesOnIndexLoad = false
 	ctx := testlogging.Context(t)
 
 	p, err := te.mgr.getParameters(ctx)
@@ -1175,7 +1169,6 @@ func TestMaybeGenerateRangeCheckpoint_FromCompactedEpochs(t *testing.T) {
 	t.Parallel()
 
 	te := newTestEnv(t)
-	te.mgr.allowCleanupWritesOnIndexLoad = false
 	ctx := testlogging.Context(t)
 
 	p, err := te.mgr.getParameters(ctx)
@@ -1332,7 +1325,6 @@ func TestCleanupMarkers_Empty(t *testing.T) {
 	t.Parallel()
 
 	te := newTestEnv(t)
-	te.mgr.allowCleanupWritesOnIndexLoad = false
 	ctx := testlogging.Context(t)
 
 	// this should be a no-op
@@ -1346,7 +1338,6 @@ func TestCleanupMarkers_GetParametersError(t *testing.T) {
 
 	te := newTestEnv(t)
 	ctx := testlogging.Context(t)
-	te.mgr.allowCleanupWritesOnIndexLoad = false
 
 	paramsError := errors.New("no parameters error")
 	te.mgr.paramProvider = faultyParamsProvider{err: paramsError}
@@ -1361,7 +1352,6 @@ func TestCleanupMarkers_FailToReadState(t *testing.T) {
 	t.Parallel()
 
 	te := newTestEnv(t)
-	te.mgr.allowCleanupWritesOnIndexLoad = false
 	ctx, cancel := context.WithCancel(testlogging.Context(t))
 
 	te.ft.Advance(1 * time.Hour) // force state refresh in CleanupMarkers
@@ -1376,7 +1366,6 @@ func TestCleanupMarkers_AvoidCleaningUpSingleEpochMarker(t *testing.T) {
 	t.Parallel()
 
 	te := newTestEnv(t)
-	te.mgr.allowCleanupWritesOnIndexLoad = false
 	ctx := testlogging.Context(t)
 
 	te.mgr.forceAdvanceEpoch(ctx)
@@ -1405,7 +1394,6 @@ func TestCleanupMarkers_CleanUpManyMarkers(t *testing.T) {
 	t.Parallel()
 
 	te := newTestEnv(t)
-	te.mgr.allowCleanupWritesOnIndexLoad = false
 	ctx := testlogging.Context(t)
 
 	p, err := te.mgr.getParameters(ctx)
