@@ -173,10 +173,24 @@ func (w *objectWriter) WriteAt(data []byte, offset int64) (n int, err error) {
 		if err := w.writeEntriesUnLocked(entries); err != nil {
 			return -1, errors.Errorf("error to write entries from %v to %v", w.currentPosition, offset)
 		}
+	}
 
-		if w.currentPosition != offset {
-			return -1, errors.Errorf("unexpected position %v vs. %v", w.currentPosition, offset)
+	if w.currentPosition < offset && w.curParentEntryIndex == len(w.parentEntries) {
+		entries := []IndirectObjectEntry{}
+		entries = append(entries, IndirectObjectEntry{
+			Start:     w.currentPosition,
+			Length:    offset - w.currentPosition,
+			ChunkSize: offset - w.currentPosition,
+			AllZero:   true,
+		})
+
+		if err := w.writeEntriesUnLocked(entries); err != nil {
+			return -1, errors.Errorf("error to write all zero from %v to %v", w.currentPosition, offset)
 		}
+	}
+
+	if w.currentPosition != offset {
+		return -1, errors.Errorf("unexpected position %v vs. %v", w.currentPosition, offset)
 	}
 
 	if data != nil {
@@ -225,6 +239,7 @@ func (w *objectWriter) writeEntriesUnLocked(entries []IndirectObjectEntry) error
 		w.indirectIndex[chunkID].Object = entry.Object
 		w.indirectIndex[chunkID].ChunkPos = entry.ChunkPos
 		w.indirectIndex[chunkID].ChunkSize = entry.ChunkSize
+		w.indirectIndex[chunkID].AllZero = entry.AllZero
 		w.currentPosition += entry.Length
 	}
 	w.indirectIndexGrowMutex.Unlock()
@@ -243,6 +258,7 @@ func (w *objectWriter) flushBuffer() error {
 	w.indirectIndex[chunkID].Length = int64(length)
 	w.indirectIndex[chunkID].ChunkPos = 0
 	w.indirectIndex[chunkID].ChunkSize = int64(length)
+	w.indirectIndex[chunkID].AllZero = false
 	w.currentPosition += int64(length)
 	w.indirectIndexGrowMutex.Unlock()
 

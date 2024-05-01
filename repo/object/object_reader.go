@@ -45,7 +45,7 @@ func getObjectEntries(ctx context.Context, r contentReader, objectID ID) ([]Indi
 	if objReader != nil {
 		return objReader.seekTable, nil
 	} else {
-		return []IndirectObjectEntry{{0, reader.Length(), objectID, 0, reader.Length()}}, nil
+		return []IndirectObjectEntry{{0, reader.Length(), objectID, 0, reader.Length(), false}}, nil
 	}
 }
 
@@ -120,22 +120,32 @@ func (r *objectReader) Read(buffer []byte) (int, error) {
 func (r *objectReader) openCurrentChunk() error {
 	st := r.seekTable[r.currentChunkIndex]
 
-	rd, err := openAndAssertLength(r.ctx, r.cr, st.Object, st.ChunkSize)
-	if err != nil {
-		return err
-	}
-
-	defer rd.Close() //nolint:errcheck
-
-	if st.ChunkPos != 0 {
-		if _, err := rd.Seek(st.ChunkPos, io.SeekStart); err != nil {
-			return errors.Wrapf(err, "error seeking chunk to %v", st.ChunkPos)
-		}
-	}
-
 	b := make([]byte, st.Length)
-	if _, err := rd.Read(b); err != nil {
-		return errors.Wrap(err, "error reading chunk")
+	if !st.AllZero {
+		rd, err := openAndAssertLength(r.ctx, r.cr, st.Object, st.ChunkSize)
+		if err != nil {
+			return err
+		}
+
+		defer rd.Close() //nolint:errcheck
+
+		if st.ChunkPos != 0 {
+			if _, err := rd.Seek(st.ChunkPos, io.SeekStart); err != nil {
+				return errors.Wrapf(err, "error seeking chunk to %v", st.ChunkPos)
+			}
+		}
+
+		if _, err := rd.Read(b); err != nil {
+			return errors.Wrap(err, "error reading chunk")
+		}
+	} else {
+		if st.Object != EmptyID {
+			return errors.New("all zero chunk's ID is not empty")
+		}
+
+		if st.ChunkPos >= st.ChunkSize {
+			return errors.Errorf("all zero chunk overflow, pos %v, size %v", st.ChunkPos, st.ChunkSize)
+		}
 	}
 
 	r.currentChunkData = b
@@ -252,6 +262,10 @@ func iterateIndirectObjectContents(ctx context.Context, cr contentReader, indexO
 	}
 
 	for _, m := range seekTable {
+		if m.AllZero {
+			continue
+		}
+
 		err := iterateBackingContents(ctx, cr, m.Object, tracker, callbackFunc)
 		if err != nil {
 			return err

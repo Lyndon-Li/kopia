@@ -7,6 +7,7 @@ type IndirectObjectEntry struct {
 	Object    ID    `json:"o,omitempty"`
 	ChunkPos  int64 `json:"c,omitempty"`
 	ChunkSize int64 `json:"k,omitempty"`
+	AllZero   bool  `json:"z,omitempty"`
 }
 
 func (i *IndirectObjectEntry) endOffset() int64 {

@@ -171,6 +171,7 @@ func appendIndexEntriesForObject(ctx context.Context, cr contentReader, indexEnt
 		Object:    objectID,
 		ChunkPos:  0,
 		ChunkSize: r.Length(),
+		AllZero:   false,
 	})
 
 	return indexEntries, totalLength, nil
@@ -186,6 +187,7 @@ func appendIndexEntries(indexEntries []IndirectObjectEntry, startingLength int64
 			Object:    inc.Object,
 			ChunkPos:  inc.ChunkPos,
 			ChunkSize: inc.ChunkSize,
+			AllZero:   inc.AllZero,
 		})
 
 		totalLength += inc.Length
