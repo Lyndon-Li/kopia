@@ -148,12 +148,13 @@ func (w *objectWriter) WriteAt(data []byte, offset int64) (n int, err error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	if w.currentPosition > offset {
-		return -1, errors.Errorf("cannot write backwards, current %v, request %v", w.currentPosition, offset)
+	tailLength := w.buffer.Length()
+
+	if w.currentPosition+int64(tailLength) > offset {
+		return -1, errors.Errorf("cannot write backwards, current %v, tail %v, request %v", w.currentPosition, tailLength, offset)
 	}
 
-	if w.currentPosition < offset {
-		tailLength := w.buffer.Length()
+	if w.currentPosition+int64(tailLength) < offset {
 		if tailLength > 0 {
 			if err := w.flushBuffer(); err != nil {
 				return -1, errors.Wrapf(err, "error to flush tail, length %v", tailLength)
