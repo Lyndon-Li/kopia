@@ -215,12 +215,12 @@ func (w *objectWriter) getEntriesToClone(off int64) ([]IndirectObjectEntry, erro
 
 	entries := []IndirectObjectEntry{}
 	for w.curParentEntryIndex < len(w.parentEntries) {
-		if w.parentEntries[w.curParentEntryIndex].Start >= off {
-			break
-		}
-
 		if w.parentEntries[w.curParentEntryIndex].Start+w.parentEntries[w.curParentEntryIndex].Length > w.currentPosition {
 			entries = append(entries, w.parentEntries[w.curParentEntryIndex])
+		}
+
+		if w.parentEntries[w.curParentEntryIndex].Start+w.parentEntries[w.curParentEntryIndex].Length > off {
+			break
 		}
 
 		w.curParentEntryIndex++
