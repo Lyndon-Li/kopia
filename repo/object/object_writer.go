@@ -179,10 +179,10 @@ func (w *objectWriter) WriteAt(data []byte, offset int64) (n int, err error) {
 		entries[len(entries)-1].Length = offset - entries[len(entries)-1].Start
 
 		w.writeEntriesUnLocked(entries)
-	}
 
-	if w.currentPosition != offset {
-		return -1, errors.Errorf("unexpected position %v vs. %v", w.currentPosition, offset)
+		if w.currentPosition != offset {
+			return -1, errors.Errorf("unexpected position %v vs. %v", w.currentPosition, offset)
+		}
 	}
 
 	if data != nil {
