@@ -164,19 +164,19 @@ func (w *objectWriter) WriteAt(data []byte, offset int64) (n int, err error) {
 
 		if w.currentPosition > entries[0].Start {
 			entries[0].ChunkPos += (w.currentPosition - entries[0].Start)
-			entries[0].Length -= (w.currentPosition - entries[0].Start + 1)
+			entries[0].Length -= (w.currentPosition - entries[0].Start)
+			entries[0].Start = w.currentPosition
 		}
 
-		lastEntry := entries[len(entries)-1]
-		if offset > lastEntry.Start {
-			entries[len(entries)-1].Length = offset - lastEntry.Start
-		}
+		entries[len(entries)-1].Length = offset - entries[len(entries)-1].Start
 
 		if err := w.writeEntriesUnLocked(entries); err != nil {
 			return -1, errors.Errorf("error to write entries from %v to %v", w.currentPosition, offset)
 		}
 
-		w.currentPosition = offset
+		if w.currentPosition != offset {
+			return -1, errors.Errorf("unexpected position %v vs. %v", w.currentPosition, offset)
+		}
 	}
 
 	if data != nil {
@@ -198,11 +198,10 @@ func (w *objectWriter) getEntriesToClone(off int64) ([]IndirectObjectEntry, erro
 			break
 		}
 
-		if w.parentEntries[w.curParentEntryIndex].Start+w.parentEntries[w.curParentEntryIndex].Length <= w.currentPosition {
-			continue
+		if w.parentEntries[w.curParentEntryIndex].Start+w.parentEntries[w.curParentEntryIndex].Length > w.currentPosition {
+			entries = append(entries, w.parentEntries[w.curParentEntryIndex])
 		}
 
-		entries = append(entries, w.parentEntries[w.curParentEntryIndex])
 		w.curParentEntryIndex++
 	}
 
