@@ -157,9 +157,20 @@ func (w *objectWriter) WriteAt(data []byte, offset int64) (n int, err error) {
 	}
 
 	if w.currentPosition < offset {
+		tailLength := w.buffer.Length()
+		if tailLength > 0 {
+			if err := w.flushBuffer(); err != nil {
+				return -1, errors.Wrapf(err, "error to flush tail, length %v", tailLength)
+			}
+		}
+
 		entries, err := w.getEntriesToClone(offset)
 		if err != nil {
 			return -1, errors.Errorf("error to get parent entries for offset %v", offset)
+		}
+
+		if w.currentPosition < entries[0].Start {
+			return -1, errors.Errorf("unexpected skip of data, expect offset %v, actual offset %v", w.currentPosition, entries[0].Start)
 		}
 
 		if w.currentPosition > entries[0].Start {
@@ -170,9 +181,7 @@ func (w *objectWriter) WriteAt(data []byte, offset int64) (n int, err error) {
 
 		entries[len(entries)-1].Length = offset - entries[len(entries)-1].Start
 
-		if err := w.writeEntriesUnLocked(entries); err != nil {
-			return -1, errors.Errorf("error to write entries from %v to %v", w.currentPosition, offset)
-		}
+		w.writeEntriesUnLocked(entries)
 	}
 
 	if w.currentPosition < offset && w.curParentEntryIndex == len(w.parentEntries) {
@@ -184,9 +193,7 @@ func (w *objectWriter) WriteAt(data []byte, offset int64) (n int, err error) {
 			AllZero:   true,
 		})
 
-		if err := w.writeEntriesUnLocked(entries); err != nil {
-			return -1, errors.Errorf("error to write all zero from %v to %v", w.currentPosition, offset)
-		}
+		w.writeEntriesUnLocked(entries)
 	}
 
 	if w.currentPosition != offset {
@@ -222,14 +229,7 @@ func (w *objectWriter) getEntriesToClone(off int64) ([]IndirectObjectEntry, erro
 	return entries, nil
 }
 
-func (w *objectWriter) writeEntriesUnLocked(entries []IndirectObjectEntry) error {
-	tailLength := w.buffer.Length()
-	if tailLength > 0 {
-		if err := w.flushBuffer(); err != nil {
-			return errors.Wrapf(err, "error to flush tail, length %v", tailLength)
-		}
-	}
-
+func (w *objectWriter) writeEntriesUnLocked(entries []IndirectObjectEntry) {
 	w.indirectIndexGrowMutex.Lock()
 	for _, entry := range entries {
 		chunkID := len(w.indirectIndex)
@@ -243,8 +243,6 @@ func (w *objectWriter) writeEntriesUnLocked(entries []IndirectObjectEntry) error
 		w.currentPosition += entry.Length
 	}
 	w.indirectIndexGrowMutex.Unlock()
-
-	return nil
 }
 
 func (w *objectWriter) flushBuffer() error {
