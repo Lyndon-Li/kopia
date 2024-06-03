@@ -491,7 +491,7 @@ func (e *Manager) maybeCompactAndCleanupLocked(ctx context.Context, p *Parameter
 
 	cs := e.lastKnownState
 
-	if shouldAdvance(cs.UncompactedEpochSets[cs.WriteEpoch], p.MinEpochDuration, p.EpochAdvanceOnCountThreshold, p.EpochAdvanceOnTotalSizeBytesThreshold) {
+	if shouldAdvance(cs.UncompactedEpochSets[cs.WriteEpoch], p.MinEpochDuration, p.EpochAdvanceOnCountThreshold, p.EpochAdvanceOnTotalSizeBytesThreshold, epochAdvanceOnTotalSizeBytesThresholdHard) {
 		if err := e.advanceEpochMarker(ctx, cs); err != nil {
 			return errors.Wrap(err, "error advancing epoch")
 		}
