@@ -142,7 +142,7 @@ func (bm *WriteManager) IterateContents(ctx context.Context, opts IterateOptions
 	}
 
 	for _, bi := range uncommitted {
-		_ = invokeCallback(bi)
+		_ = invokeCallback(*bi)
 	}
 
 	if err := bm.maybeRefreshIndexes(ctx); err != nil {

@@ -270,7 +270,7 @@ func TestPackIndexPerContentLimits(t *testing.T) {
 		tc.info.ContentID = cid
 
 		b := Builder{
-			cid: tc.info,
+			cid: &tc.info,
 		}
 
 		var result bytes.Buffer

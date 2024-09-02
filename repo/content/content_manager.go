@@ -144,7 +144,7 @@ func (bm *WriteManager) DeleteContent(ctx context.Context, contentID ID) error {
 
 	// if found in committed index, add another entry that's marked for deletion
 	if bi, ok := bm.packIndexBuilder[contentID]; ok {
-		return bm.deletePreexistingContent(ctx, bi)
+		return bm.deletePreexistingContent(ctx, *bi)
 	}
 
 	// see if the content existed before
@@ -536,7 +536,7 @@ func (bm *WriteManager) processWritePackResultLocked(pp *pendingPackInfo, packFi
 	if writeErr == nil {
 		// success, add pack index builder entries to index.
 		for _, info := range packFileIndex {
-			bm.packIndexBuilder.Add(info)
+			bm.packIndexBuilder.Add(*info)
 		}
 
 		pp.currentPackData.Close()
@@ -883,7 +883,7 @@ func (bm *WriteManager) getOverlayContentInfoReadLocked(contentID ID) (*pendingP
 
 	// added contents, written to packs but not yet added to indexes
 	if ci, ok := bm.packIndexBuilder[contentID]; ok {
-		return nil, ci, true
+		return nil, *ci, true
 	}
 
 	return nil, Info{}, false
