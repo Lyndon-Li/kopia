@@ -1,152 +1,148 @@
 package index
 
 import (
-	"context"
 	"crypto/rand"
-	"encoding/binary"
 	"hash/fnv"
 	"io"
-	"os"
+	"math"
 
-	"github.com/edsrzf/mmap-go"
 	"github.com/kopia/kopia/internal/gather"
-	"github.com/kopia/kopia/internal/tempfile"
 	"github.com/kopia/kopia/repo/blob"
+	"github.com/kopia/kopia/repo/compression"
 	"github.com/kopia/kopia/repo/logging"
 	"github.com/pkg/errors"
 )
 
-const (
-	defaultSegCapacity = 64 << 10
-	defaultSegFileSize = 3 << 20
-)
-
 type LargeBuilder struct {
-	store       map[*ID]infoLoc
-	segWrite    mmap.MMap
-	writeOffset int
-	writeSegNum int
-	segRead     mmap.MMap
-	segCapacity int
-	totalSegs   int
-	instanceID  string
-	mapFiles    map[string]*os.File
-	baseTimestamp          int64
-	packBlobIDs map[blob.ID]int
-	indexBlobIDs map[blob.ID]int
-
+	storeIdx      map[uint32]int
+	packBlobIDIdx map[uint32]uint32
+	packBlobIDs   []blob.ID
+	store         []*infoCompact
 }
 
-type infoLoc struct {
-	segment int16
-	pos     int16
-	
-}
-
-type pair struct {
-	key   *ID
-	value infoLoc
+type infoCompact struct {
+	packBlobIDIndex     uint32
+	originalLength      uint32
+	packedLength        uint32
+	packOffset          uint32
+	timeStamp           int64
+	compressionHeaderID compression.HeaderID
+	contentID           ID
+	deleted             bool
+	formatVersion       byte
+	encryptionKeyID     byte
 }
 
 var log = logging.Module("idxbuilder")
 
 func NewLargeBuilder() *LargeBuilder {
 	return &LargeBuilder{
-		store:       make(map[*ID]infoLoc),
-		segCapacity: defaultSegCapacity,
+		storeIdx:      make(map[uint32]int),
+		packBlobIDIdx: make(map[uint32]uint32),
 	}
 }
 
 // Add adds a new entry to the builder or conditionally replaces it if the timestamp is greater.
-func (b *LargeBuilder) Add(i Info) error {
-	loc, err := b.storeInfo(&i)
+func (b *LargeBuilder) Add(i *Info) error {
+	packBlobIDIdx, err := b.storePackBlobID(i.PackBlobID)
 	if err != nil {
-		return errors.Wrap(err, "error to store index")
-	}
-	
-	binary.Write()
-	binary.Read()
-
-	cid := &i.ContentID
-
-	oldLoc, found := b.store[cid]
-	if !found {
-		b.store[cid] = loc
-		return nil
+		return err
 	}
 
-	old, err := b.getInfoFromLoc(oldLoc)
+	storeID, err := b.getValidStoreID(i.ContentID)
 	if err != nil {
-		return errors.Wrapf(err, "error to load index at loc %v", oldLoc)
+		return err
 	}
 
-	if contentInfoGreaterThanStruct(i, *old) {
-		b.store[cid] = loc
+	storeIdx, found := b.storeIdx[storeID]
+	if !found || contentInfoGreaterThanStruct(i, &Info{
+		TimestampSeconds: b.store[storeIdx].timeStamp,
+		Deleted:          b.store[storeIdx].deleted,
+		PackBlobID:       b.packBlobIDs[b.store[storeIdx].packBlobIDIndex],
+	}) {
+		idx := len(b.store)
+		b.store = append(b.store, &infoCompact{
+			contentID:           i.ContentID,
+			packBlobIDIndex:     packBlobIDIdx,
+			originalLength:      i.OriginalLength,
+			packedLength:        i.PackedLength,
+			packOffset:          i.PackOffset,
+			timeStamp:           i.TimestampSeconds,
+			compressionHeaderID: i.CompressionHeaderID,
+			deleted:             i.Deleted,
+			formatVersion:       i.FormatVersion,
+			encryptionKeyID:     i.EncryptionKeyID,
+		})
+
+		b.storeIdx[storeID] = idx
 	}
 
 	return nil
 }
 
-func (b *LargeBuilder) EndAdd() {
-	b.closeWrite()
-}
+func (b *LargeBuilder) storePackBlobID(id blob.ID) (uint32, error) {
+	for {
+		h := fnv.New32a()
+		io.WriteString(h, string(id)) //nolint:errcheck
+		sum := h.Sum32()
 
-func (b *LargeBuilder) Close() {
-	b.closeWrite()
-	b.closeReadMap()
-	b.closeMapFiles()
-}
+		if idx, found := b.packBlobIDIdx[sum]; found {
+			if uint32(len(b.packBlobIDs)) <= idx {
+				return math.MaxUint32, errors.New("packBlobIDs overflow")
+			}
 
-func (b *LargeBuilder) closeWrite() {
-	if b.segWrite != nil {
-		if err := b.segWrite.Unmap(); err != nil {
-			log(ctx).Warn("unable to close write segment")
+			if b.packBlobIDs[idx] == id {
+				return idx, nil
+			}
+		} else {
+			idx = uint32(len(b.packBlobIDs))
+			b.packBlobIDs = append(b.packBlobIDs, id)
+			b.packBlobIDIdx[sum] = idx
+			return idx, nil
 		}
+	}
+}
 
-		b.segWrite = nil
+func (b *LargeBuilder) getValidStoreID(id ID) (uint32, error) {
+	for {
+		h := fnv.New32a()
+		io.WriteString(h, id.String()) //nolint:errcheck
+		sum := h.Sum32()
+
+		if idx, found := b.storeIdx[sum]; found {
+			if len(b.store) <= idx {
+				return math.MaxUint32, errors.New("store overflow")
+			}
+
+			if b.store[idx].contentID == id {
+				return sum, nil
+			}
+		} else {
+			return sum, nil
+		}
 	}
 }
 
-func (b *LargeBuilder) closeReadMap() {
-	if b.segRead != nil {
-		if err := b.segRead.Unmap(); err != nil {
-			log(ctx).Warn("unable to close read segment")
-		}
-
-		b.segRead = nil
-	}
-}
-
-func (b *LargeBuilder) closeMapFiles() {
-	for k, v := range b.mapFiles {
-		if err := v.Close(); err != nil {
-			log(ctx).Warnf("unable to close map file %s, for segment %s", v.Name(), k)
-		}
-	}
-
-	clear(b.mapFiles)
-}
-
-func (b *LargeBuilder) shard(maxShardSize int) [][]pair {
+func (b *LargeBuilder) shard(maxShardSize int) [][]*infoCompact {
 	if len(b.store) == 0 {
-		return [][]pair{}
+		return [][]*infoCompact{}
 	}
 
 	numShards := (len(b.store) + maxShardSize - 1) / maxShardSize
-	result := make([][]pair, numShards)
+	result := make([][]*infoCompact, numShards)
 
 	if numShards <= 1 {
-		for k, v := range b.store {
-			result[0] = append(result[0], pair{k, v})
+		for _, v := range b.store {
+			result[0] = append(result[0], v)
 		}
 	} else {
-		for k, v := range b.store {
+		for _, v := range b.store {
 			h := fnv.New32a()
-			io.WriteString(h, k.String()) //nolint:errcheck
+			io.WriteString(h, v.contentID.String()) //nolint:errcheck
 
 			shard := h.Sum32() % uint32(numShards)
 
-			result[shard] = append(result[shard], pair{k, v})
+			result[shard] = append(result[shard], v)
 		}
 	}
 
@@ -174,7 +170,12 @@ func (b *LargeBuilder) BuildShards(indexVersion int, stable bool, shardSize int)
 	}
 
 	for _, s := range shards {
-		builder := b.makeBuilder(s)
+		builder, err := b.makeBuilder(s)
+		if err != nil {
+			closeShards()
+
+			return nil, nil, errors.Wrap(err, "error making builder")
+		}
 
 		buf := gather.NewWriteBuffer()
 
@@ -206,105 +207,40 @@ func (b *LargeBuilder) BuildShards(indexVersion int, stable bool, shardSize int)
 	return dataShards, closeShards, nil
 }
 
-func (b *LargeBuilder) makeBuilder(shard []pair) Builder {
+func (b *LargeBuilder) makeBuilder(shard []*infoCompact) (Builder, error) {
 	length := len(shard)
 	builder := make(map[ID]Info, length)
 	for i := 0; i < length; i++ {
-		info := b.getInfoFromLoc(shard[i].value)
-		builder[*shard[i].key] = *info
-	}
-
-	return builder
-}
-
-func (b *LargeBuilder) storeInfo(i *Info) infoLoc {
-
-}
-
-func (b *LargeBuilder) getInfoFromLoc(loc infoLoc) *Info {
-}
-
-func (b *LargeBuilder) mayMapWriteSegment(ctx context.Context, segName string) (mmap.MMap, error) {
-	flags := 0
-	var f *os.File
-	var err error
-
-	if b.writeOffset 
-
-	if _, found := b.mapFiles[segName]; found {
-		f = b.mapFiles[segName]
-	}
-
-	if f == nil {
-		if read {
-			return nil, errors.Errorf("there is no map file for segment %s", segName)
-		}
-
-		f, err = createMappedFile(ctx, defaultSegFileSize)
+		packBlobID, err := b.getPackBlobID(shard[i].packBlobIDIndex)
 		if err != nil {
-			return nil, err
+			return Builder{}, err
 		}
 
-		b.mapFiles[segName] = f
+		builder[shard[i].contentID] = Info{
+			PackBlobID:          packBlobID,
+			TimestampSeconds:    shard[i].timeStamp,
+			OriginalLength:      shard[i].originalLength,
+			PackedLength:        shard[i].packedLength,
+			PackOffset:          shard[i].packOffset,
+			CompressionHeaderID: shard[i].compressionHeaderID,
+			ContentID:           shard[i].contentID,
+			Deleted:             shard[i].deleted,
+			FormatVersion:       shard[i].formatVersion,
+			EncryptionKeyID:     shard[i].encryptionKeyID,
+		}
 	}
 
-	s, err := mmap.MapRegion(f, m.opts.FileSegmentSize, mmap.RDWR, flags, 0)
-	if err != nil {
-		return nil, errors.Wrap(err, "unable to map region")
-	}
-
-	return s[:0], nil
+	return builder, nil
 }
 
-func (b *LargeBuilder) mapSegment(ctx context.Context, read bool, segName string) (mmap.MMap, error) {
-	flags := 0
-	var f *os.File
-	var err error
-
-
-
-	if _, found := b.mapFiles[segName]; found {
-		f = b.mapFiles[segName]
-	}
-
-	if f == nil {
-		if read {
-			return nil, errors.Errorf("there is no map file for segment %s", segName)
+func (b *LargeBuilder) getPackBlobID(idxKey uint32) (blob.ID, error) {
+	if idx, found := b.packBlobIDIdx[idxKey]; !found {
+		return blob.ID(""), errors.New("not found")
+	} else {
+		if uint32(len(b.packBlobIDs)) <= idx {
+			return blob.ID(""), errors.New("packBlobIDs overflow")
 		}
 
-		f, err = createMappedFile(ctx, defaultSegFileSize)
-		if err != nil {
-			return nil, err
-		}
-
-		b.mapFiles[segName] = f
-	}
-
-	s, err := mmap.MapRegion(f, m.opts.FileSegmentSize, mmap.RDWR, flags, 0)
-	if err != nil {
-		return nil, errors.Wrap(err, "unable to map region")
-	}
-
-	return s[:0], nil
-}
-
-func createMappedFile(ctx context.Context, size int) (*os.File, error) {
-	f, err := tempfile.Create("")
-	if err != nil {
-		return nil, errors.Wrap(err, "unable to create memory-mapped file")
-	}
-
-	if err := f.Truncate(int64(size)); err != nil {
-		closeFile(ctx, f)
-
-		return nil, errors.Wrap(err, "unable to truncate memory-mapped file")
-	}
-
-	return f, nil
-}
-
-func closeFile(ctx context.Context, f *os.File) {
-	if err := f.Close(); err != nil {
-		log(ctx).Warnf("unable to close segment file: %v", err)
+		return b.packBlobIDs[idx], nil
 	}
 }

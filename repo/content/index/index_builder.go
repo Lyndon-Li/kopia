@@ -11,6 +11,8 @@ import (
 	"github.com/pkg/errors"
 
 	"github.com/kopia/kopia/internal/gather"
+	"github.com/kopia/kopia/repo/blob"
+	"github.com/kopia/kopia/repo/compression"
 )
 
 const randomSuffixSize = 32 // number of random bytes to append at the end to make the index blob unique
@@ -38,7 +40,7 @@ func (b Builder) Add(i Info) {
 	cid := i.ContentID
 
 	old, found := b[cid]
-	if !found || contentInfoGreaterThanStruct(i, old) {
+	if !found || contentInfoGreaterThanStruct(&i, &old) {
 		b[cid] = i
 	}
 }
@@ -63,8 +65,8 @@ func init() {
 // sortedContents returns the list of []Info sorted lexicographically using bucket sort
 // sorting is optimized based on the format of content IDs (optional single-character
 // alphanumeric prefix (0-9a-z), followed by hexadecimal digits (0-9a-f).
-func (b Builder) sortedContents() []Info {
-	var buckets [36 * 16][]Info
+func (b Builder) sortedContents() []*Info {
+	var buckets [36 * 16][]*Info
 
 	// phase 1 - bucketize into 576 (36 *16) separate lists
 	// by first [0-9a-z] and second character [0-9a-f].
@@ -75,7 +77,7 @@ func (b Builder) sortedContents() []Info {
 		// first: 0..35, second: 0..15
 		buck := first<<4 + second //nolint:gomnd
 
-		buckets[buck] = append(buckets[buck], v)
+		buckets[buck] = append(buckets[buck], &v)
 	}
 
 	// phase 2 - sort each non-empty bucket in parallel using goroutines
@@ -104,7 +106,7 @@ func (b Builder) sortedContents() []Info {
 	wg.Wait()
 
 	// Phase 3 - merge results from all buckets.
-	result := make([]Info, 0, len(b))
+	result := make([]*Info, 0, len(b))
 
 	for i := range len(buckets) {
 		result = append(result, buckets[i]...)
@@ -194,7 +196,22 @@ func (b Builder) BuildShards(indexVersion int, stable bool, shardSize int) ([]ga
 		dataShards      []gather.Bytes
 		randomSuffix    [32]byte
 	)
+	type infoCompact struct {
+		packBlobIDIndex     uint32
+		originalLength      uint32
+		packedLength        uint32
+		packOffset          uint32
+		timeStamp           uint64
+		compressionHeaderID compression.HeaderID
+		deleted             bool
+		formatVersion       byte
+		encryptionKeyID     byte
+	}
 
+	type Builder struct {
+		store       map[*ID]infoCompact
+		PackBlobIDs map[blob.ID]int
+	}
 	closeShards := func() {
 		for _, ds := range dataShardsBuf {
 			ds.Close()
