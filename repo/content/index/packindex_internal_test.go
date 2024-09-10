@@ -10,7 +10,7 @@ func TestRoundTrip(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		b := contentIDToBytes(nil, tc)
+		b := contentIDToBytes(nil, &tc)
 
 		if got := bytesToContentID(b); got != tc {
 			t.Errorf("%q did not round trip, got %q, wanted %q", tc, got, tc)

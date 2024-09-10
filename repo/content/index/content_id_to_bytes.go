@@ -22,6 +22,6 @@ func contentIDBytesGreaterOrEqual(a, b []byte) bool {
 	return bytes.Compare(a, b) >= 0
 }
 
-func contentIDToBytes(output []byte, c ID) []byte {
+func contentIDToBytes(output []byte, c *ID) []byte {
 	return append(append(output, c.prefix), c.data[0:c.idLen]...)
 }

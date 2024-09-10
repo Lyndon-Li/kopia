@@ -303,7 +303,7 @@ func (b *indexV2) findEntryPositionExact(idBytes []byte) (int, error) {
 func (b *indexV2) findEntry(contentID ID) ([]byte, error) {
 	var hashBuf [maxContentIDSize]byte
 
-	key := contentIDToBytes(hashBuf[:0], contentID)
+	key := contentIDToBytes(hashBuf[:0], &contentID)
 
 	// empty index blob, this is possible when compaction removes exactly everything
 	if b.hdr.keySize == unknownKeySize {
@@ -373,7 +373,7 @@ type indexBuilderV2 struct {
 	baseTimestamp          int64
 }
 
-func indexV2FormatInfoFromInfo(v *Info) indexV2FormatInfo {
+func indexV2FormatInfoFromInfo(v *InfoCompact) indexV2FormatInfo {
 	return indexV2FormatInfo{
 		formatVersion:       v.FormatVersion,
 		compressionHeaderID: v.CompressionHeaderID,
@@ -382,7 +382,7 @@ func indexV2FormatInfoFromInfo(v *Info) indexV2FormatInfo {
 }
 
 // buildUniqueFormatToIndexMap builds a map of unique indexV2FormatInfo to their numeric identifiers.
-func buildUniqueFormatToIndexMap(sortedInfos []*Info) map[indexV2FormatInfo]byte {
+func buildUniqueFormatToIndexMap(sortedInfos []*InfoCompact) map[indexV2FormatInfo]byte {
 	result := map[indexV2FormatInfo]byte{}
 
 	for _, v := range sortedInfos {
@@ -396,11 +396,11 @@ func buildUniqueFormatToIndexMap(sortedInfos []*Info) map[indexV2FormatInfo]byte
 }
 
 // buildPackIDToIndexMap builds a map of unique blob IDs to their numeric identifiers.
-func buildPackIDToIndexMap(sortedInfos []*Info) map[blob.ID]int {
+func buildPackIDToIndexMap(sortedInfos []*InfoCompact) map[blob.ID]int {
 	result := map[blob.ID]int{}
 
 	for _, v := range sortedInfos {
-		blobID := v.PackBlobID
+		blobID := *v.PackBlobID
 		if _, ok := result[blobID]; !ok {
 			result[blobID] = len(result)
 		}
@@ -410,7 +410,7 @@ func buildPackIDToIndexMap(sortedInfos []*Info) map[blob.ID]int {
 }
 
 // maxContentLengths computes max content lengths in the builder.
-func maxContentLengths(sortedInfos []*Info) (maxPackedLength, maxOriginalLength, maxPackOffset uint32) {
+func maxContentLengths(sortedInfos []*InfoCompact) (maxPackedLength, maxOriginalLength, maxPackOffset uint32) {
 	for _, v := range sortedInfos {
 		if l := v.PackedLength; l > maxPackedLength {
 			maxPackedLength = l
@@ -436,7 +436,7 @@ func max(a, b int) int {
 	return b
 }
 
-func newIndexBuilderV2(sortedInfos []*Info) (*indexBuilderV2, error) {
+func newIndexBuilderV2(sortedInfos []*InfoCompact) (*indexBuilderV2, error) {
 	entrySize := v2EntryOffsetFormatID
 
 	// compute a map of unique formats to their indexes.
@@ -495,7 +495,7 @@ func newIndexBuilderV2(sortedInfos []*Info) (*indexBuilderV2, error) {
 }
 
 // buildV2 writes the pack index to the provided output.
-func (b Builder) buildV2(output io.Writer) error {
+func (b LargeBuilder) buildV2(output io.Writer) error {
 	sortedInfos := b.sortedContents()
 
 	b2, err := newIndexBuilderV2(sortedInfos)
@@ -509,7 +509,7 @@ func (b Builder) buildV2(output io.Writer) error {
 	extraData := b2.prepareExtraData(sortedInfos)
 
 	if b2.keyLength <= 1 {
-		return errors.Errorf("invalid key length: %v for %v", b2.keyLength, len(b))
+		return errors.Errorf("invalid key length: %v for %v", b2.keyLength, b.Length())
 	}
 
 	// write header
@@ -566,14 +566,15 @@ func (b Builder) buildV2(output io.Writer) error {
 	return errors.Wrap(w.Flush(), "error flushing index")
 }
 
-func (b *indexBuilderV2) prepareExtraData(sortedInfos []*Info) []byte {
+func (b *indexBuilderV2) prepareExtraData(sortedInfos []*InfoCompact) []byte {
 	var extraData []byte
 
 	for _, it := range sortedInfos {
-		if it.PackBlobID != "" {
-			if _, ok := b.packBlobIDOffsets[it.PackBlobID]; !ok {
-				b.packBlobIDOffsets[it.PackBlobID] = uint32(len(extraData))
-				extraData = append(extraData, []byte(it.PackBlobID)...)
+		packBlobID := *it.PackBlobID
+		if packBlobID != "" {
+			if _, ok := b.packBlobIDOffsets[packBlobID]; !ok {
+				b.packBlobIDOffsets[packBlobID] = uint32(len(extraData))
+				extraData = append(extraData, []byte(packBlobID)...)
 			}
 		}
 	}
@@ -586,7 +587,7 @@ func (b *indexBuilderV2) prepareExtraData(sortedInfos []*Info) []byte {
 	return extraData
 }
 
-func (b *indexBuilderV2) writeIndexEntry(w io.Writer, it *Info) error {
+func (b *indexBuilderV2) writeIndexEntry(w io.Writer, it *InfoCompact) error {
 	var hashBuf [maxContentIDSize]byte
 
 	k := contentIDToBytes(hashBuf[:0], it.ContentID)
@@ -629,7 +630,7 @@ func (b *indexBuilderV2) writeFormatInfoEntry(w io.Writer, f indexV2FormatInfo) 
 	return errors.Wrap(err, "error writing format info entry")
 }
 
-func (b *indexBuilderV2) writeIndexValueEntry(w io.Writer, it *Info) error {
+func (b *indexBuilderV2) writeIndexValueEntry(w io.Writer, it *InfoCompact) error {
 	var buf [v2EntryMaxLength]byte
 
 	//    0-3: timestamp bits 0..31 (relative to base time)
@@ -659,7 +660,7 @@ func (b *indexBuilderV2) writeIndexValueEntry(w io.Writer, it *Info) error {
 
 	//  14-15: pack ID (lower 16 bits)- index into Packs[]
 
-	packBlobIndex := b.packID2Index[it.PackBlobID]
+	packBlobIndex := b.packID2Index[*it.PackBlobID]
 	binary.BigEndian.PutUint16(buf[v2EntryOffsetPackBlobID:], uint16(packBlobIndex))
 
 	//     16: format ID - index into Formats[] - 0 - present if not all formats are identical

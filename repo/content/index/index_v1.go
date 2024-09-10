@@ -190,7 +190,7 @@ func (b *indexV1) findEntryPositionExact(idBytes []byte) (int, error) {
 func (b *indexV1) findEntry(output []byte, contentID ID) ([]byte, error) {
 	var hashBuf [maxContentIDSize]byte
 
-	key := contentIDToBytes(hashBuf[:0], contentID)
+	key := contentIDToBytes(hashBuf[:0], &contentID)
 
 	// empty index blob, this is possible when compaction removes exactly everything
 	if b.hdr.keySize == unknownKeySize {
@@ -266,7 +266,7 @@ type indexBuilderV1 struct {
 }
 
 // buildV1 writes the pack index to the provided output.
-func (b Builder) buildV1(output io.Writer) error {
+func (b LargeBuilder) buildV1(output io.Writer) error {
 	allContents := b.sortedContents()
 	b1 := &indexBuilderV1{
 		packBlobIDOffsets: map[blob.ID]uint32{},
@@ -307,7 +307,7 @@ func (b Builder) buildV1(output io.Writer) error {
 	return errors.Wrap(w.Flush(), "error flushing index")
 }
 
-func (b *indexBuilderV1) prepareExtraData(allContents []*Info) []byte {
+func (b *indexBuilderV1) prepareExtraData(allContents []*InfoCompact) []byte {
 	var extraData []byte
 
 	var hashBuf [maxContentIDSize]byte
@@ -317,10 +317,10 @@ func (b *indexBuilderV1) prepareExtraData(allContents []*Info) []byte {
 			b.keyLength = len(contentIDToBytes(hashBuf[:0], it.ContentID))
 		}
 
-		if it.PackBlobID != "" {
-			if _, ok := b.packBlobIDOffsets[it.PackBlobID]; !ok {
-				b.packBlobIDOffsets[it.PackBlobID] = uint32(len(extraData))
-				extraData = append(extraData, []byte(it.PackBlobID)...)
+		if *it.PackBlobID != "" {
+			if _, ok := b.packBlobIDOffsets[*it.PackBlobID]; !ok {
+				b.packBlobIDOffsets[*it.PackBlobID] = uint32(len(extraData))
+				extraData = append(extraData, []byte(*it.PackBlobID)...)
 			}
 		}
 	}
@@ -330,7 +330,7 @@ func (b *indexBuilderV1) prepareExtraData(allContents []*Info) []byte {
 	return extraData
 }
 
-func (b *indexBuilderV1) writeEntry(w io.Writer, it *Info, entry []byte) error {
+func (b *indexBuilderV1) writeEntry(w io.Writer, it *InfoCompact, entry []byte) error {
 	var hashBuf [maxContentIDSize]byte
 
 	k := contentIDToBytes(hashBuf[:0], it.ContentID)
@@ -362,14 +362,14 @@ func (b *indexBuilderV1) writeEntry(w io.Writer, it *Info, entry []byte) error {
 	return nil
 }
 
-func (b *indexBuilderV1) formatEntry(entry []byte, it *Info) error {
+func (b *indexBuilderV1) formatEntry(entry []byte, it *InfoCompact) error {
 	entryTimestampAndFlags := entry[0:8]
 	entryPackFileOffset := entry[8:12]
 	entryPackedOffset := entry[12:16]
 	entryPackedLength := entry[16:20]
 	timestampAndFlags := uint64(it.TimestampSeconds) << 16 //nolint:gomnd
 
-	packBlobID := it.PackBlobID
+	packBlobID := *it.PackBlobID
 	if len(packBlobID) == 0 {
 		return errors.Errorf("empty pack content ID for %v", it.ContentID)
 	}

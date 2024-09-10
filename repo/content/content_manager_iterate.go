@@ -120,7 +120,7 @@ func (bm *WriteManager) IterateContents(ctx context.Context, opts IterateOptions
 
 	invokeCallback := func(i Info) error {
 		if !opts.IncludeDeleted {
-			if ci, ok := uncommitted[i.ContentID]; ok {
+			if ci, ok := uncommitted.Find(i.ContentID); ok {
 				if ci.Deleted {
 					return nil
 				}
@@ -136,14 +136,14 @@ func (bm *WriteManager) IterateContents(ctx context.Context, opts IterateOptions
 		return callback(i)
 	}
 
-	if len(uncommitted) == 0 && opts.IncludeDeleted && opts.Range == index.AllIDs && opts.Parallel <= 1 {
+	if uncommitted.Length() == 0 && opts.IncludeDeleted && opts.Range == index.AllIDs && opts.Parallel <= 1 {
 		// fast path, invoke callback directly
 		invokeCallback = callback
 	}
 
-	for _, bi := range uncommitted {
+	uncommitted.Iterate(func(_ index.ID, bi Info) {
 		_ = invokeCallback(bi)
-	}
+	})
 
 	if err := bm.maybeRefreshIndexes(ctx); err != nil {
 		return err

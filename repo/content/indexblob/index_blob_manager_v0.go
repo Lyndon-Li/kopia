@@ -489,7 +489,7 @@ func (m *ManagerV0) compactIndexBlobs(ctx context.Context, indexBlobs []Metadata
 		return errors.Wrap(mperr, "mutable parameters")
 	}
 
-	bld := make(index.Builder)
+	bld := index.NewLargeBuilder()
 
 	var inputs, outputs []blob.Metadata
 
@@ -530,21 +530,21 @@ func (m *ManagerV0) compactIndexBlobs(ctx context.Context, indexBlobs []Metadata
 
 func (m *ManagerV0) dropContentsFromBuilder(bld index.Builder, opt CompactOptions) {
 	for _, dc := range opt.DropContents {
-		if _, ok := bld[dc]; ok {
+		if _, ok := bld.Find(dc); ok {
 			m.log.Debugf("manual-drop-from-index %v", dc)
-			delete(bld, dc)
+			bld.Delete(&dc)
 		}
 	}
 
 	if !opt.DropDeletedBefore.IsZero() {
 		m.log.Debugf("drop-content-deleted-before %v", opt.DropDeletedBefore)
 
-		for _, i := range bld {
+		bld.IterateCompacted(func(_ *index.ID, i *index.InfoCompact) {
 			if i.Deleted && i.Timestamp().Before(opt.DropDeletedBefore) {
-				m.log.Debugf("drop-from-index-old-deleted %v %v", i.ContentID, i.Timestamp())
-				delete(bld, i.ContentID)
+				m.log.Debugf("drop-from-index-old-deleted %v %v", *i.ContentID, i.Timestamp())
+				bld.Delete(i.ContentID)
 			}
-		}
+		})
 
 		m.log.Debugf("finished drop-content-deleted-before %v", opt.DropDeletedBefore)
 	}

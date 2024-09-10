@@ -141,9 +141,9 @@ func testPackIndex(t *testing.T, version int) {
 	}
 
 	infoMap := map[ID]Info{}
-	b1 := make(Builder)
-	b2 := make(Builder)
-	b3 := make(Builder)
+	b1 := NewLargeBuilder()
+	b2 := NewLargeBuilder()
+	b3 := NewLargeBuilder()
 
 	for _, info := range infos {
 		infoMap[info.ContentID] = info
@@ -269,9 +269,8 @@ func TestPackIndexPerContentLimits(t *testing.T) {
 		cid := deterministicContentID(t, "hello-world", 1)
 		tc.info.ContentID = cid
 
-		b := Builder{
-			cid: tc.info,
-		}
+		b := newLargeBuilder()
+		b.Add(tc.info)
 
 		var result bytes.Buffer
 
@@ -297,7 +296,7 @@ func TestPackIndexPerContentLimits(t *testing.T) {
 }
 
 func TestSortedContents(t *testing.T) {
-	b := Builder{}
+	b := newLargeBuilder()
 
 	for i := range 100 {
 		v := deterministicContentID(t, "", i)
@@ -315,12 +314,12 @@ func TestSortedContents(t *testing.T) {
 			t.Fatalf("not sorted %v (was %v)!", info.ContentID, last)
 		}
 
-		last = info.ContentID
+		last = *info.ContentID
 	}
 }
 
 func TestSortedContents2(t *testing.T) {
-	b := Builder{}
+	b := newLargeBuilder()
 
 	b.Add(Info{
 		ContentID: mustParseID(t, "0123"),
@@ -362,12 +361,12 @@ func TestSortedContents2(t *testing.T) {
 			t.Fatalf("not sorted %v (was %v)!", info.ContentID, last)
 		}
 
-		last = info.ContentID
+		last = *info.ContentID
 	}
 }
 
 func TestPackIndexV2TooManyUniqueFormats(t *testing.T) {
-	b := Builder{}
+	b := newLargeBuilder()
 
 	for i := range v2MaxFormatCount {
 		v := deterministicContentID(t, "", i)
@@ -454,7 +453,7 @@ func fuzzTest(rnd *rand.Rand, originalData []byte, rounds int, callback func(d [
 }
 
 func TestShard(t *testing.T) {
-	b := Builder{}
+	b := newLargeBuilder()
 
 	// generate 10000 IDs in random order
 	ids := make([]int, 10000)
@@ -474,22 +473,22 @@ func TestShard(t *testing.T) {
 	}
 
 	// verify number of shards
-	verifyAllShardedIDs(t, b.shard(100000), len(b), 1)
-	verifyAllShardedIDs(t, b.shard(100), len(b), 100)
+	verifyAllShardedIDs(t, b.shard(100000), b.Length(), 1)
+	verifyAllShardedIDs(t, b.shard(100), b.Length(), 100)
 
 	// sharding will always produce stable results, verify sorted shard lengths here
 	require.ElementsMatch(t,
 		[]int{460, 472, 473, 477, 479, 483, 486, 492, 498, 499, 501, 503, 504, 505, 511, 519, 524, 528, 542, 544},
-		verifyAllShardedIDs(t, b.shard(500), len(b), 20))
+		verifyAllShardedIDs(t, b.shard(500), b.Length(), 20))
 	require.ElementsMatch(t,
 		[]int{945, 964, 988, 988, 993, 1002, 1014, 1017, 1021, 1068},
-		verifyAllShardedIDs(t, b.shard(1000), len(b), 10))
+		verifyAllShardedIDs(t, b.shard(1000), b.Length(), 10))
 	require.ElementsMatch(t,
 		[]int{1952, 1995, 2005, 2013, 2035},
-		verifyAllShardedIDs(t, b.shard(2000), len(b), 5))
+		verifyAllShardedIDs(t, b.shard(2000), b.Length(), 5))
 }
 
-func verifyAllShardedIDs(t *testing.T, sharded []Builder, numTotal, numShards int) []int {
+func verifyAllShardedIDs(t *testing.T, sharded []*LargeBuilder, numTotal, numShards int) []int {
 	t.Helper()
 
 	require.Len(t, sharded, numShards)
@@ -504,12 +503,12 @@ func verifyAllShardedIDs(t *testing.T, sharded []Builder, numTotal, numShards in
 	var lens []int
 
 	for _, s := range sharded {
-		cnt += len(s)
-		lens = append(lens, len(s))
+		cnt += s.Length()
+		lens = append(lens, s.Length())
 
-		for _, v := range s {
+		s.Iterate(func(_ ID, v Info) {
 			delete(m, v.ContentID)
-		}
+		})
 	}
 
 	require.Equal(t, numTotal, cnt, "invalid total number of sharded elements")
