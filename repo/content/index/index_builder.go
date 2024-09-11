@@ -4,14 +4,11 @@ import (
 	"crypto/rand"
 	"hash/fnv"
 	"io"
-	"runtime"
-	"sort"
-	"sync"
 
 	"github.com/pkg/errors"
 
+	"github.com/google/btree"
 	"github.com/kopia/kopia/internal/gather"
-	"github.com/kopia/kopia/internal/searchtree"
 	"github.com/kopia/kopia/repo/blob"
 )
 
@@ -32,9 +29,21 @@ type Builder interface {
 	Delete(*ID)
 }
 
+func (ic *InfoCompact) Less(other btree.Item) bool {
+	return ic.ContentID.String() < other.(*InfoCompact).ContentID.String()
+}
+
+type blobIDWrap struct {
+	id *blob.ID
+}
+
+func (b blobIDWrap) Less(other btree.Item) bool {
+	return *b.id < *other.(blobIDWrap).id
+}
+
 type LargeBuilder struct {
-	indexStore  *searchtree.AddressableMap[*ID, *InfoCompact]
-	packBlobIDs *searchtree.AddressableSet[*blob.ID]
+	indexStore  *btree.BTree
+	packBlobIDs *btree.BTree
 }
 
 func NewLargeBuilder() Builder {
@@ -43,25 +52,9 @@ func NewLargeBuilder() Builder {
 
 func newLargeBuilder() *LargeBuilder {
 	return &LargeBuilder{
-		indexStore:  searchtree.NewAddressableMap[*ID, *InfoCompact](lessID, equalID),
-		packBlobIDs: searchtree.NewAddressableSet[*blob.ID](lessPackBlobID, equalPackBlobID),
+		indexStore:  btree.New(2),
+		packBlobIDs: btree.New(2),
 	}
-}
-
-func lessPackBlobID(a *blob.ID, b *blob.ID) bool {
-	return *a < *b
-}
-
-func equalPackBlobID(a *blob.ID, b *blob.ID) bool {
-	return *a == *b
-}
-
-func lessID(a *ID, b *ID) bool {
-	return a.String() < b.String()
-}
-
-func equalID(a *ID, b *ID) bool {
-	return a.String() == b.String()
 }
 
 // Clone returns a deep Clone of the Builder.
@@ -70,13 +63,9 @@ func (b *LargeBuilder) Clone() Builder {
 		return nil
 	}
 
-	r := &LargeBuilder{
-		indexStore:  searchtree.NewAddressableMap[*ID, *InfoCompact](lessID, equalID),
-		packBlobIDs: searchtree.NewAddressableSet[*blob.ID](lessPackBlobID, equalPackBlobID),
-	}
-
-	r.indexStore.Clone(b.indexStore)
-	r.packBlobIDs.Clone(b.packBlobIDs)
+	r := newLargeBuilder()
+	r.indexStore = b.indexStore.Clone()
+	r.packBlobIDs = b.packBlobIDs.Clone()
 
 	return r
 }
@@ -85,53 +74,77 @@ func (b *LargeBuilder) Clone() Builder {
 func (b *LargeBuilder) Add(i Info) {
 	cid := i.ContentID
 
-	found, old := b.indexStore.Search(&cid)
-	if !found || contentInfoGreaterThanStruct(&i, &Info{
-		PackBlobID:       *old.PackBlobID,
-		TimestampSeconds: old.TimestampSeconds,
-		Deleted:          old.Deleted,
+	found := b.indexStore.Get(&InfoCompact{ContentID: &cid})
+	if found == nil || contentInfoGreaterThanStruct(&i, &Info{
+		PackBlobID:       *found.(*InfoCompact).PackBlobID,
+		TimestampSeconds: found.(*InfoCompact).TimestampSeconds,
+		Deleted:          found.(*InfoCompact).Deleted,
 	}) {
-		packBlobID := i.PackBlobID
-		b.packBlobIDs.Insert(&packBlobID)
+		var id btree.Item
+		if id = b.packBlobIDs.Get(blobIDWrap{&i.PackBlobID}); id == nil {
+			packBlobID := i.PackBlobID
+			id = b.packBlobIDs.ReplaceOrInsert(blobIDWrap{&packBlobID})
+		}
 
-		b.indexStore.Insert(&cid, CompactInfo(i))
+		_ = b.indexStore.ReplaceOrInsert(&InfoCompact{
+			PackBlobID:          id.(blobIDWrap).id,
+			ContentID:           &cid,
+			TimestampSeconds:    i.TimestampSeconds,
+			OriginalLength:      i.OriginalLength,
+			PackedLength:        i.PackedLength,
+			PackOffset:          i.PackOffset,
+			CompressionHeaderID: i.CompressionHeaderID,
+			Deleted:             i.Deleted,
+			FormatVersion:       i.FormatVersion,
+			EncryptionKeyID:     i.EncryptionKeyID,
+		})
 	}
 }
 
 func (b *LargeBuilder) AddCompacted(ic *InfoCompact) {
-	found, old := b.indexStore.Search(ic.ContentID)
-	if !found || contentInfoGreaterThanStruct(&Info{
+	found := b.indexStore.Get(&InfoCompact{ContentID: ic.ContentID})
+	if found == nil || contentInfoGreaterThanStruct(&Info{
 		PackBlobID:       *ic.PackBlobID,
 		TimestampSeconds: ic.TimestampSeconds,
 		Deleted:          ic.Deleted,
 	}, &Info{
-		PackBlobID:       *old.PackBlobID,
-		TimestampSeconds: old.TimestampSeconds,
-		Deleted:          old.Deleted,
+		PackBlobID:       *found.(*InfoCompact).PackBlobID,
+		TimestampSeconds: found.(*InfoCompact).TimestampSeconds,
+		Deleted:          found.(*InfoCompact).Deleted,
 	}) {
-		b.indexStore.Insert(ic.ContentID, ic)
+		_ = b.indexStore.ReplaceOrInsert(ic)
 	}
 }
 
 func (b *LargeBuilder) Length() int {
-	return b.indexStore.Length()
+	return b.indexStore.Len()
 }
 
 func (b *LargeBuilder) Find(cid ID) (Info, bool) {
-	found, infoCompact := b.indexStore.Search(&cid)
-	return FlatenInfo(infoCompact), found
+	found := b.indexStore.Get(&InfoCompact{ContentID: &cid})
+	if found == nil {
+		return Info{}, false
+	} else {
+		return FlatenInfo(found.(*InfoCompact)), true
+	}
 }
 
-func (b *LargeBuilder) Iterate(func(cid ID, i Info)) {
-
+func (b *LargeBuilder) Iterate(callback func(cid ID, i Info)) {
+	b.indexStore.Ascend(func(v btree.Item) bool {
+		callback(*v.(*InfoCompact).ContentID, FlatenInfo(v.(*InfoCompact)))
+		return true
+	})
 }
 
-func (b *LargeBuilder) IterateCompacted(func(cid *ID, i *InfoCompact)) {
-
+func (b *LargeBuilder) IterateCompacted(callback func(cid *ID, i *InfoCompact)) {
+	b.indexStore.Ascend(func(v btree.Item) bool {
+		callback(v.(*InfoCompact).ContentID, v.(*InfoCompact))
+		return true
+	})
 }
 
 func (b *LargeBuilder) Delete(cid *ID) {
-
+	b.indexStore.Delete(&InfoCompact{ContentID: cid})
 }
 
 // base36Value stores a base-36 reverse lookup such that ASCII character corresponds to its
@@ -159,42 +172,17 @@ func (b *LargeBuilder) sortedContents() []*InfoCompact {
 
 	// phase 1 - bucketize into 576 (36 *16) separate lists
 	// by first [0-9a-z] and second character [0-9a-f].
-	b.indexStore.Interate(func(cid *ID, value *InfoCompact) bool {
-		first := int(base36Value[cid.prefix])
-		second := int(cid.data[0] >> 4) //nolint:gomnd
+	b.indexStore.Ascend(func(v btree.Item) bool {
+		first := int(base36Value[v.(*InfoCompact).ContentID.prefix])
+		second := int(v.(*InfoCompact).ContentID.data[0] >> 4) //nolint:gomnd
 
 		// first: 0..35, second: 0..15
 		buck := first<<4 + second //nolint:gomnd
 
-		buckets[buck] = append(buckets[buck], value)
+		buckets[buck] = append(buckets[buck], v.(*InfoCompact))
 
-		return false
+		return true
 	})
-
-	// phase 2 - sort each non-empty bucket in parallel using goroutines
-	// this is much faster than sorting one giant list.
-	var wg sync.WaitGroup
-
-	numWorkers := runtime.NumCPU()
-	for worker := range numWorkers {
-		wg.Add(1)
-
-		go func() {
-			defer wg.Done()
-
-			for i := range buckets {
-				if i%numWorkers == worker {
-					buck := buckets[i]
-
-					sort.Slice(buck, func(i, j int) bool {
-						return buck[i].ContentID.less(*buck[j].ContentID)
-					})
-				}
-			}
-		}()
-	}
-
-	wg.Wait()
 
 	// Phase 3 - merge results from all buckets.
 	result := make([]*InfoCompact, 0, b.Length())
@@ -251,22 +239,20 @@ func (b *LargeBuilder) shard(maxShardSize int) []*LargeBuilder {
 
 	result := make([]*LargeBuilder, numShards)
 	for i := range result {
-		result[i] = &LargeBuilder{
-			indexStore:  searchtree.NewAddressableMap[*ID, *InfoCompact](lessID, equalID),
-			packBlobIDs: searchtree.NewAddressableSet[*blob.ID](lessPackBlobID, equalPackBlobID),
-		}
+		result[i] = newLargeBuilder()
 	}
 
-	b.indexStore.Interate(func(k *ID, v *InfoCompact) bool {
+	b.indexStore.Ascend(func(v btree.Item) bool {
 		h := fnv.New32a()
-		io.WriteString(h, k.String()) //nolint:errcheck
+		io.WriteString(h, v.(*InfoCompact).ContentID.String()) //nolint:errcheck
 
 		shard := h.Sum32() % uint32(numShards)
 
-		result[shard].indexStore.Insert(k, v)
+		result[shard].indexStore.ReplaceOrInsert(v)
 
 		return true
 	})
+
 	var nonEmpty []*LargeBuilder
 
 	for _, r := range result {

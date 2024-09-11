@@ -58,20 +58,3 @@ func FlatenInfo(ic *InfoCompact) Info {
 		EncryptionKeyID:     ic.EncryptionKeyID,
 	}
 }
-
-func CompactInfo(i Info) *InfoCompact {
-	packBlobID := i.PackBlobID
-	contentID := i.ContentID
-	return &InfoCompact{
-		PackBlobID:          &packBlobID,
-		ContentID:           &contentID,
-		TimestampSeconds:    i.TimestampSeconds,
-		OriginalLength:      i.OriginalLength,
-		PackedLength:        i.PackedLength,
-		PackOffset:          i.PackOffset,
-		CompressionHeaderID: i.CompressionHeaderID,
-		Deleted:             i.Deleted,
-		FormatVersion:       i.FormatVersion,
-		EncryptionKeyID:     i.EncryptionKeyID,
-	}
-}
