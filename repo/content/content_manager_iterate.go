@@ -141,7 +141,7 @@ func (bm *WriteManager) IterateContents(ctx context.Context, opts IterateOptions
 		invokeCallback = callback
 	}
 
-	uncommitted.Iterate(func(_ index.ID, bi Info) {
+	uncommitted.Iterate(func(_ ID, bi Info) {
 		_ = invokeCallback(bi)
 	})
 

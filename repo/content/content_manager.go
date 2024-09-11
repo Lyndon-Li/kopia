@@ -176,7 +176,7 @@ func (bm *WriteManager) maybeRefreshIndexes(ctx context.Context) error {
 
 // Intentionally passing bi by value.
 // +checklocks:bm.mu
-func (bm *WriteManager) deletePreexistingContent(ctx context.Context, ci index.Info) error {
+func (bm *WriteManager) deletePreexistingContent(ctx context.Context, ci Info) error {
 	if ci.Deleted {
 		return nil
 	}
@@ -390,7 +390,7 @@ func (bm *WriteManager) verifyCurrentPackItemsLocked() {
 
 // +checklocks:bm.mu
 func (bm *WriteManager) verifyPackIndexBuilderLocked(mp format.MutableParameters) {
-	bm.packIndexBuilder.Iterate(func(k index.ID, cpi index.Info) {
+	bm.packIndexBuilder.Iterate(func(k ID, cpi Info) {
 		bm.assertInvariant(cpi.ContentID == k, "content ID entry has invalid key: %v %v", cpi.ContentID, k)
 
 		if cpi.Deleted {
@@ -486,7 +486,7 @@ func (bm *WriteManager) flushPackIndexesLocked(ctx context.Context, mp format.Mu
 			}
 		}
 
-		bm.packIndexBuilder = index.NewLargeBuilder()
+		bm.packIndexBuilder = index.NewNormalBuilder()
 	}
 
 	bm.flushPackIndexesAfter = bm.timeNow().Add(flushPackIndexTimeout)
@@ -535,8 +535,8 @@ func (bm *WriteManager) processWritePackResultLocked(pp *pendingPackInfo, packFi
 
 	if writeErr == nil {
 		// success, add pack index builder entries to index.
-		packFileIndex.IterateCompacted(func(_ *index.ID, ic *index.InfoCompact) {
-			bm.packIndexBuilder.AddCompacted(ic)
+		packFileIndex.IterateRaw(func(_ ID, ic index.BuilderItem) {
+			bm.packIndexBuilder.AddRaw(ic)
 		})
 
 		pp.currentPackData.Close()
@@ -998,7 +998,7 @@ func NewWriteManager(ctx context.Context, sm *SharedManager, options SessionOpti
 
 		flushPackIndexesAfter: sm.timeNow().Add(flushPackIndexTimeout),
 		pendingPacks:          map[blob.ID]*pendingPackInfo{},
-		packIndexBuilder:      index.NewLargeBuilder(),
+		packIndexBuilder:      index.NewNormalBuilder(),
 		sessionUser:           options.SessionUser,
 		sessionHost:           options.SessionHost,
 		onUpload: func(numBytes int64) {

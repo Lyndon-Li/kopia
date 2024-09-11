@@ -47,7 +47,7 @@ func testCache(t *testing.T, cache committedContentIndexCache, fakeTime *faketim
 		t.Fatal("openIndex unexpectedly succeeded")
 	}
 
-	b1 := index.NewLargeBuilder()
+	b1 := index.NewNormalBuilder()
 	b1.Add(index.Info{PackBlobID: "p1234", ContentID: mustParseID(t, "c1")})
 	b1.Add(index.Info{PackBlobID: "p1234", ContentID: mustParseID(t, "c2")})
 
@@ -60,13 +60,13 @@ func testCache(t *testing.T, cache committedContentIndexCache, fakeTime *faketim
 		t.Fatal("hasIndexBlobID invalid response, expected true")
 	}
 
-	b2 := index.NewLargeBuilder()
+	b2 := index.NewNormalBuilder()
 	b2.Add(index.Info{PackBlobID: "p2345", ContentID: mustParseID(t, "c3")})
 	b2.Add(index.Info{PackBlobID: "p2345", ContentID: mustParseID(t, "c4")})
 
 	require.NoError(t, cache.addContentToCache(ctx, "ndx2", mustBuildIndex(t, b2)))
 
-	b3 := index.NewLargeBuilder()
+	b3 := index.NewNormalBuilder()
 	b3.Add(index.Info{PackBlobID: "p2345", ContentID: mustParseID(t, "c3")})
 	b3.Add(index.Info{PackBlobID: "p2345", ContentID: mustParseID(t, "c4")})
 

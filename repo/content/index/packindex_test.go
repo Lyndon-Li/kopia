@@ -141,9 +141,9 @@ func testPackIndex(t *testing.T, version int) {
 	}
 
 	infoMap := map[ID]Info{}
-	b1 := NewLargeBuilder()
-	b2 := NewLargeBuilder()
-	b3 := NewLargeBuilder()
+	b1 := NewNormalBuilder()
+	b2 := NewNormalBuilder()
+	b3 := NewNormalBuilder()
 
 	for _, info := range infos {
 		infoMap[info.ContentID] = info
@@ -275,7 +275,7 @@ func TestPackIndexPerContentLimits(t *testing.T) {
 		var result bytes.Buffer
 
 		if tc.errMsg == "" {
-			require.NoError(t, b.buildV2(&result))
+			require.NoError(t, buildV2(b, &result))
 
 			pi, err := Open(result.Bytes(), nil, func() int { return fakeEncryptionOverhead })
 			require.NoError(t, err)
@@ -288,7 +288,7 @@ func TestPackIndexPerContentLimits(t *testing.T) {
 
 			require.Equal(t, got, tc.info)
 		} else {
-			err := b.buildV2(&result)
+			err := buildV2(b, &result)
 			require.Error(t, err)
 			require.Contains(t, err.Error(), tc.errMsg)
 		}
@@ -306,15 +306,15 @@ func TestSortedContents(t *testing.T) {
 		})
 	}
 
-	got := b.sortedContents()
+	got := b.SortedContents()
 
 	var last ID
 	for _, info := range got {
-		if info.ContentID.less(last) {
-			t.Fatalf("not sorted %v (was %v)!", info.ContentID, last)
+		if info.GetContentID().less(last) {
+			t.Fatalf("not sorted %v (was %v)!", info.GetContentID(), last)
 		}
 
-		last = *info.ContentID
+		last = info.GetContentID()
 	}
 }
 
@@ -352,16 +352,16 @@ func TestSortedContents2(t *testing.T) {
 		ContentID: mustParseID(t, "h1023"),
 	})
 
-	got := b.sortedContents()
+	got := b.SortedContents()
 
 	var last ID
 
 	for _, info := range got {
-		if info.ContentID.less(last) {
-			t.Fatalf("not sorted %v (was %v)!", info.ContentID, last)
+		if info.GetContentID().less(last) {
+			t.Fatalf("not sorted %v (was %v)!", info.GetContentID(), last)
 		}
 
-		last = *info.ContentID
+		last = info.GetContentID()
 	}
 }
 
@@ -379,7 +379,7 @@ func TestPackIndexV2TooManyUniqueFormats(t *testing.T) {
 		})
 	}
 
-	require.NoError(t, b.buildV2(io.Discard))
+	require.NoError(t, buildV2(b, io.Discard))
 
 	// add one more to push it over the edge
 	b.Add(Info{
@@ -388,7 +388,7 @@ func TestPackIndexV2TooManyUniqueFormats(t *testing.T) {
 		CompressionHeaderID: compression.HeaderID(5000),
 	})
 
-	err := b.buildV2(io.Discard)
+	err := buildV2(b, io.Discard)
 	require.Error(t, err)
 	require.Equal(t, "unsupported - too many unique formats 256 (max 255)", err.Error())
 }
@@ -488,7 +488,7 @@ func TestShard(t *testing.T) {
 		verifyAllShardedIDs(t, b.shard(2000), b.Length(), 5))
 }
 
-func verifyAllShardedIDs(t *testing.T, sharded []*LargeBuilder, numTotal, numShards int) []int {
+func verifyAllShardedIDs(t *testing.T, sharded []*largeBuilder, numTotal, numShards int) []int {
 	t.Helper()
 
 	require.Len(t, sharded, numShards)

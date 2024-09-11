@@ -122,7 +122,7 @@ func (sm *SharedManager) getContentDataReadLocked(ctx context.Context, pp *pendi
 }
 
 func (sm *SharedManager) preparePackDataContent(mp format.MutableParameters, pp *pendingPackInfo) (index.Builder, error) {
-	packFileIndex := index.NewLargeBuilder()
+	packFileIndex := index.NewNormalBuilder()
 	haveContent := false
 
 	sb := logging.GetBuffer()
