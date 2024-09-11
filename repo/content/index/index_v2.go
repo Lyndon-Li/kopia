@@ -563,6 +563,16 @@ func (b Builder) buildV2(output io.Writer) error {
 		return errors.Wrap(err, "error writing extra data")
 	}
 
+	genProfile("")
+
+	fmt.Printf("%v", len(sortedInfos))
+	for _, it := range sortedInfos {
+		if it.PackBlobID == "fake-abc" {
+			fmt.Printf("%v", it.ContentID)
+		}
+	}
+	fmt.Printf("%v", len(b))
+
 	return errors.Wrap(w.Flush(), "error flushing index")
 }
 

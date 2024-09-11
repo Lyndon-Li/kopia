@@ -2,12 +2,16 @@ package index
 
 import (
 	"crypto/rand"
+	"fmt"
 	"hash/fnv"
 	"io"
+	"os"
 	"runtime"
+	"runtime/pprof"
 	"sort"
 	"sync"
 
+	"github.com/google/uuid"
 	"github.com/pkg/errors"
 
 	"github.com/kopia/kopia/internal/gather"
@@ -201,6 +205,8 @@ func (b Builder) BuildShards(indexVersion int, stable bool, shardSize int) ([]ga
 		}
 	}
 
+	//genProfile("after-shard")
+
 	for _, s := range shardedBuilders {
 		buf := gather.NewWriteBuffer()
 
@@ -211,6 +217,8 @@ func (b Builder) BuildShards(indexVersion int, stable bool, shardSize int) ([]ga
 
 			return nil, nil, errors.Wrap(err, "error building index shard")
 		}
+
+		//genProfile(fmt.Sprintf("build-shard-%v", i))
 
 		if !stable {
 			if _, err := rand.Read(randomSuffix[:]); err != nil {
@@ -229,5 +237,21 @@ func (b Builder) BuildShards(indexVersion int, stable bool, shardSize int) ([]ga
 		dataShards = append(dataShards, buf.Bytes())
 	}
 
+	fmt.Printf("%v", len(b))
+
+	//genProfile("after-build")
+
 	return dataShards, closeShards, nil
+}
+
+func genProfile(n string) {
+	if n == "" {
+		n = uuid.NewString()
+	}
+
+	name := fmt.Sprintf("/tmp/profile-%s.pb.gz", n)
+	f, _ := os.Create(name)
+	defer f.Close()
+	runtime.GC()
+	pprof.WriteHeapProfile(f)
 }
