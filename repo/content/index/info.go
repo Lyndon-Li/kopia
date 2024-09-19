@@ -36,6 +36,7 @@ type InfoCompact struct {
 
 type BuilderItem interface {
 	GetPackBlobID() blob.ID
+	GetPPackBlobID() *blob.ID
 	GetContentID() ID
 	GetTimestampSeconds() int64
 	GetOriginalLength() uint32
@@ -55,6 +56,10 @@ func (i Info) Timestamp() time.Time {
 
 func (i Info) GetPackBlobID() blob.ID {
 	return i.PackBlobID
+}
+
+func (i Info) GetPPackBlobID() *blob.ID {
+	return &i.PackBlobID
 }
 
 func (i Info) GetContentID() ID {
@@ -100,6 +105,10 @@ func (i InfoCompact) Timestamp() time.Time {
 
 func (i *InfoCompact) GetPackBlobID() blob.ID {
 	return *i.PackBlobID
+}
+
+func (i *InfoCompact) GetPPackBlobID() *blob.ID {
+	return i.PackBlobID
 }
 
 func (i *InfoCompact) GetContentID() ID {

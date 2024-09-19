@@ -2,13 +2,8 @@ package index
 
 import (
 	"crypto/rand"
-	"fmt"
 	"hash/fnv"
 	"io"
-	"os"
-	"path/filepath"
-	"runtime"
-	"runtime/pprof"
 
 	"github.com/pkg/errors"
 
@@ -247,9 +242,9 @@ func (b *largeBuilder) BuildShards(indexVersion int, stable bool, shardSize int)
 		}
 	}
 
-	genProfile("after-shard")
+	//genProfile("after-shard")
 
-	for i, s := range shardedBuilders {
+	for _, s := range shardedBuilders {
 		buf := gather.NewWriteBuffer()
 
 		dataShardsBuf = append(dataShardsBuf, buf)
@@ -260,7 +255,7 @@ func (b *largeBuilder) BuildShards(indexVersion int, stable bool, shardSize int)
 			return nil, nil, errors.Wrap(err, "error building index shard")
 		}
 
-		genProfile(fmt.Sprintf("build-shard-%v", i))
+		//genProfile(fmt.Sprintf("build-shard-%v", i))
 
 		if !stable {
 			if _, err := rand.Read(randomSuffix[:]); err != nil {
@@ -279,13 +274,20 @@ func (b *largeBuilder) BuildShards(indexVersion int, stable bool, shardSize int)
 		dataShards = append(dataShards, buf.Bytes())
 	}
 
+	//fmt.Printf("%v", b.Length())
+	//genProfile("after-build")
+
 	return dataShards, closeShards, nil
 }
 
-func genProfile(n string) {
-	name := filepath.Join("/tmp/profile-", n, ".pb.gz")
-	f, _ := os.Create(name)
-	defer f.Close()
-	runtime.GC()
-	pprof.WriteHeapProfile(f)
-}
+// func genProfile(n string) {
+// 	if n == "" {
+// 		n = uuid.NewString()
+// 	}
+
+// 	name := fmt.Sprintf("/tmp/profile-%s.pb.gz", n)
+// 	f, _ := os.Create(name)
+// 	defer f.Close()
+// 	runtime.GC()
+// 	pprof.WriteHeapProfile(f)
+// }

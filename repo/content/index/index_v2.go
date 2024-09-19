@@ -363,13 +363,13 @@ func (b *indexV2) Close() error {
 }
 
 type indexBuilderV2 struct {
-	packBlobIDOffsets      map[blob.ID]uint32
+	packBlobIDOffsets      map[*blob.ID]uint32
 	entryCount             int
 	keyLength              int
 	entrySize              int
 	extraDataOffset        uint32
 	uniqueFormatInfo2Index map[indexV2FormatInfo]byte
-	packID2Index           map[blob.ID]int
+	packID2Index           map[*blob.ID]int
 	baseTimestamp          int64
 }
 
@@ -396,11 +396,11 @@ func buildUniqueFormatToIndexMap(sortedInfos []BuilderItem) map[indexV2FormatInf
 }
 
 // buildPackIDToIndexMap builds a map of unique blob IDs to their numeric identifiers.
-func buildPackIDToIndexMap(sortedInfos []BuilderItem) map[blob.ID]int {
-	result := map[blob.ID]int{}
+func buildPackIDToIndexMap(sortedInfos []BuilderItem) map[*blob.ID]int {
+	result := map[*blob.ID]int{}
 
 	for _, v := range sortedInfos {
-		blobID := v.GetPackBlobID()
+		blobID := v.GetPPackBlobID()
 		if _, ok := result[blobID]; !ok {
 			result[blobID] = len(result)
 		}
@@ -485,7 +485,7 @@ func newIndexBuilderV2(sortedInfos []BuilderItem) (*indexBuilderV2, error) {
 	}
 
 	return &indexBuilderV2{
-		packBlobIDOffsets:      map[blob.ID]uint32{},
+		packBlobIDOffsets:      map[*blob.ID]uint32{},
 		keyLength:              keyLength,
 		entrySize:              entrySize,
 		entryCount:             len(sortedInfos),
@@ -534,7 +534,7 @@ func buildV2(b Builder, output io.Writer) error {
 	}
 
 	// write pack ID entries in the index order of values from packID2Index (0, 1, 2, ...).
-	reversePackIDIndex := make([]blob.ID, len(b2.packID2Index))
+	reversePackIDIndex := make([]*blob.ID, len(b2.packID2Index))
 	for k, v := range b2.packID2Index {
 		reversePackIDIndex[v] = k
 	}
@@ -563,6 +563,15 @@ func buildV2(b Builder, output io.Writer) error {
 		return errors.Wrap(err, "error writing extra data")
 	}
 
+	// genProfile("")
+	// fmt.Printf("%v", len(sortedInfos))
+	// for _, it := range sortedInfos {
+	// 	if it.GetPackBlobID() == "fake-abc" {
+	// 		fmt.Printf("%v", it.GetContentID())
+	// 	}
+	// }
+	// fmt.Printf("%v", b.Length())
+
 	return errors.Wrap(w.Flush(), "error flushing index")
 }
 
@@ -570,11 +579,11 @@ func (b *indexBuilderV2) prepareExtraData(sortedInfos []BuilderItem) []byte {
 	var extraData []byte
 
 	for _, it := range sortedInfos {
-		packBlobID := it.GetPackBlobID()
-		if packBlobID != "" {
+		packBlobID := it.GetPPackBlobID()
+		if *packBlobID != "" {
 			if _, ok := b.packBlobIDOffsets[packBlobID]; !ok {
 				b.packBlobIDOffsets[packBlobID] = uint32(len(extraData))
-				extraData = append(extraData, []byte(packBlobID)...)
+				extraData = append(extraData, []byte(*packBlobID)...)
 			}
 		}
 	}
@@ -607,10 +616,10 @@ func (b *indexBuilderV2) writeIndexEntry(w io.Writer, it BuilderItem) error {
 	return nil
 }
 
-func (b *indexBuilderV2) writePackIDEntry(w io.Writer, packID blob.ID) error {
+func (b *indexBuilderV2) writePackIDEntry(w io.Writer, packID *blob.ID) error {
 	var buf [v2PackInfoSize]byte
 
-	buf[0] = byte(len(packID))
+	buf[0] = byte(len(*packID))
 	binary.BigEndian.PutUint32(buf[1:], b.packBlobIDOffsets[packID]+b.extraDataOffset)
 
 	_, err := w.Write(buf[:])
@@ -660,7 +669,7 @@ func (b *indexBuilderV2) writeIndexValueEntry(w io.Writer, it BuilderItem) error
 
 	//  14-15: pack ID (lower 16 bits)- index into Packs[]
 
-	packBlobIndex := b.packID2Index[it.GetPackBlobID()]
+	packBlobIndex := b.packID2Index[it.GetPPackBlobID()]
 	binary.BigEndian.PutUint16(buf[v2EntryOffsetPackBlobID:], uint16(packBlobIndex))
 
 	//     16: format ID - index into Formats[] - 0 - present if not all formats are identical
