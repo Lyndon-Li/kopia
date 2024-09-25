@@ -561,8 +561,6 @@ func buildV2(sortedInfos []BuilderItem, output io.Writer) error {
 		return errors.Wrap(err, "error writing extra data")
 	}
 
-	//genProfile("")
-
 	return errors.Wrap(w.Flush(), "error flushing index")
 }
 
