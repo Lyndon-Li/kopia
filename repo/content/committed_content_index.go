@@ -256,7 +256,7 @@ func (c *committedContentIndex) combineSmallIndexes(ctx context.Context, m index
 		return m, nil
 	}
 
-	b := index.NewNormalBuilder()
+	b := index.Builder{}
 
 	for _, ndx := range toMerge {
 		if err := ndx.Iterate(index.AllIDs, func(i index.Info) error {

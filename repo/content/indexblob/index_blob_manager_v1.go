@@ -68,7 +68,7 @@ func (m *ManagerV1) Compact(ctx context.Context, opt CompactOptions) error {
 
 // CompactEpoch compacts the provided index blobs and writes a new set of blobs.
 func (m *ManagerV1) CompactEpoch(ctx context.Context, blobIDs []blob.ID, outputPrefix blob.ID) error {
-	tmpbld := index.NewLargeBuilder()
+	tmpbld := index.NewCompactionBuilder()
 
 	for _, indexBlob := range blobIDs {
 		if err := addIndexBlobsToBuilder(ctx, m.enc, tmpbld, indexBlob); err != nil {

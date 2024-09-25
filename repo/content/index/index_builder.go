@@ -16,91 +16,35 @@ import (
 const randomSuffixSize = 32 // number of random bytes to append at the end to make the index blob unique
 
 // Builder prepares and writes content index.
-type Builder interface {
+type Builder map[ID]Info
+
+type BuilderCreator interface {
 	Add(Info)
-	AddRaw(BuilderItem)
-	Clone() Builder
-	Length() int
-	Build(io.Writer, int) error
-	BuildStable(io.Writer, int) error
-	BuildShards(int, bool, int) ([]gather.Bytes, func(), error)
-	Find(ID) (Info, bool)
-	Iterate(func(ID, Info))
-	IterateRaw(func(ID, BuilderItem))
-	Delete(ID)
-}
-
-type normalBuilder struct {
-	store map[ID]Info
-}
-
-func NewNormalBuilder() Builder {
-	return newNormalBuilder()
-}
-
-func newNormalBuilder() *normalBuilder {
-	return &normalBuilder{
-		store: make(map[ID]Info),
-	}
 }
 
 // Clone returns a deep Clone of the Builder.
-func (b *normalBuilder) Clone() Builder {
+func (b Builder) Clone() Builder {
 	if b == nil {
 		return nil
 	}
 
-	r := newNormalBuilder()
+	r := Builder{}
 
-	for k, v := range b.store {
-		r.store[k] = v
+	for k, v := range b {
+		r[k] = v
 	}
 
 	return r
 }
 
 // Add adds a new entry to the builder or conditionally replaces it if the timestamp is greater.
-func (b *normalBuilder) Add(i Info) {
-	cid := i.GetContentID()
+func (b Builder) Add(i Info) {
+	cid := i.ContentID
 
-	old, found := b.store[cid]
+	old, found := b[cid]
 	if !found || contentInfoGreaterThanStruct(i, old) {
-		b.store[cid] = i
+		b[cid] = i
 	}
-}
-
-func (b *normalBuilder) AddRaw(i BuilderItem) {
-	cid := i.GetContentID()
-
-	old, found := b.store[cid]
-	if !found || contentInfoGreaterThanStruct(i, old) {
-		b.store[cid] = i.(Info)
-	}
-}
-
-func (b *normalBuilder) Length() int {
-	return len(b.store)
-}
-
-func (b *normalBuilder) Find(cid ID) (Info, bool) {
-	i, found := b.store[cid]
-	return i, found
-}
-
-func (b *normalBuilder) IterateRaw(callback func(cid ID, i BuilderItem)) {
-	for k, v := range b.store {
-		callback(k, v)
-	}
-}
-
-func (b *normalBuilder) Iterate(callback func(cid ID, i Info)) {
-	for k, v := range b.store {
-		callback(k, v)
-	}
-}
-
-func (b *normalBuilder) Delete(cid ID) {
-	delete(b.store, cid)
 }
 
 // base36Value stores a base-36 reverse lookup such that ASCII character corresponds to its
@@ -120,15 +64,15 @@ func init() {
 	}
 }
 
-// sortedContents returns the list of []BuilderItem sorted lexicographically using bucket sort
+// sortedContents returns the list of []Info sorted lexicographically using bucket sort
 // sorting is optimized based on the format of content IDs (optional single-character
 // alphanumeric prefix (0-9a-z), followed by hexadecimal digits (0-9a-f).
-func (b *normalBuilder) sortedContents() []BuilderItem {
+func (b Builder) sortedContents() []BuilderItem {
 	var buckets [36 * 16][]BuilderItem
 
 	// phase 1 - bucketize into 576 (36 *16) separate lists
 	// by first [0-9a-z] and second character [0-9a-f].
-	for cid, v := range b.store {
+	for cid, v := range b {
 		first := int(base36Value[cid.prefix])
 		second := int(cid.data[0] >> 4) //nolint:gomnd
 
@@ -164,7 +108,7 @@ func (b *normalBuilder) sortedContents() []BuilderItem {
 	wg.Wait()
 
 	// Phase 3 - merge results from all buckets.
-	result := make([]BuilderItem, 0, b.Length())
+	result := make([]BuilderItem, 0, len(b))
 
 	for i := range len(buckets) {
 		result = append(result, buckets[i]...)
@@ -174,7 +118,7 @@ func (b *normalBuilder) sortedContents() []BuilderItem {
 }
 
 // Build writes the pack index to the provided output.
-func (b *normalBuilder) Build(output io.Writer, version int) error {
+func (b Builder) Build(output io.Writer, version int) error {
 	if err := b.BuildStable(output, version); err != nil {
 		return err
 	}
@@ -193,27 +137,27 @@ func (b *normalBuilder) Build(output io.Writer, version int) error {
 }
 
 // BuildStable writes the pack index to the provided output.
-func (b *normalBuilder) BuildStable(output io.Writer, version int) error {
+func (b Builder) BuildStable(output io.Writer, version int) error {
 	return buildSortedContents(b.sortedContents(), output, version)
 }
 
-func buildSortedContents(contents []BuilderItem, output io.Writer, version int) error {
+func buildSortedContents(items []BuilderItem, output io.Writer, version int) error {
 	switch version {
 	case Version1:
-		return buildV1(contents, output)
+		return buildV1(items, output)
 
 	case Version2:
-		return buildV2(contents, output)
+		return buildV2(items, output)
 
 	default:
 		return errors.Errorf("unsupported index version: %v", version)
 	}
 }
 
-func (b *normalBuilder) shard(maxShardSize int) []Builder {
-	numShards := (b.Length() + maxShardSize - 1) / maxShardSize
+func (b Builder) shard(maxShardSize int) []Builder {
+	numShards := (len(b) + maxShardSize - 1) / maxShardSize
 	if numShards <= 1 {
-		if b.Length() == 0 {
+		if len(b) == 0 {
 			return []Builder{}
 		}
 
@@ -222,23 +166,22 @@ func (b *normalBuilder) shard(maxShardSize int) []Builder {
 
 	result := make([]Builder, numShards)
 	for i := range result {
-		result[i] = newNormalBuilder()
+		result[i] = make(Builder)
 	}
 
-	for k, v := range b.store {
+	for k, v := range b {
 		h := fnv.New32a()
 		io.WriteString(h, k.String()) //nolint:errcheck
 
 		shard := h.Sum32() % uint32(numShards)
 
-		nb := result[shard]
-		nb.(*normalBuilder).store[k] = v
+		result[shard][k] = v
 	}
 
 	var nonEmpty []Builder
 
 	for _, r := range result {
-		if r.Length() > 0 {
+		if len(r) > 0 {
 			nonEmpty = append(nonEmpty, r)
 		}
 	}
@@ -248,7 +191,7 @@ func (b *normalBuilder) shard(maxShardSize int) []Builder {
 
 // BuildShards builds the set of index shards ensuring no more than the provided number of contents are in each index.
 // Returns shard bytes and function to clean up after the shards have been written.
-func (b *normalBuilder) BuildShards(indexVersion int, stable bool, shardSize int) ([]gather.Bytes, func(), error) {
+func (b Builder) BuildShards(indexVersion int, stable bool, shardSize int) ([]gather.Bytes, func(), error) {
 	if shardSize == 0 {
 		return nil, nil, errors.Errorf("invalid shard size")
 	}

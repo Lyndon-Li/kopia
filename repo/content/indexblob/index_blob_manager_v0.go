@@ -489,7 +489,7 @@ func (m *ManagerV0) compactIndexBlobs(ctx context.Context, indexBlobs []Metadata
 		return errors.Wrap(mperr, "mutable parameters")
 	}
 
-	bld := index.NewNormalBuilder()
+	bld := make(index.Builder)
 
 	var inputs, outputs []blob.Metadata
 
@@ -530,27 +530,27 @@ func (m *ManagerV0) compactIndexBlobs(ctx context.Context, indexBlobs []Metadata
 
 func (m *ManagerV0) dropContentsFromBuilder(bld index.Builder, opt CompactOptions) {
 	for _, dc := range opt.DropContents {
-		if _, ok := bld.Find(dc); ok {
+		if _, ok := bld[dc]; ok {
 			m.log.Debugf("manual-drop-from-index %v", dc)
-			bld.Delete(dc)
+			delete(bld, dc)
 		}
 	}
 
 	if !opt.DropDeletedBefore.IsZero() {
 		m.log.Debugf("drop-content-deleted-before %v", opt.DropDeletedBefore)
 
-		bld.IterateRaw(func(_ index.ID, i index.BuilderItem) {
-			if i.IsDeleted() && i.Timestamp().Before(opt.DropDeletedBefore) {
-				m.log.Debugf("drop-from-index-old-deleted %v %v", i.GetContentID(), i.Timestamp())
-				bld.Delete(i.GetContentID())
+		for _, i := range bld {
+			if i.Deleted && i.Timestamp().Before(opt.DropDeletedBefore) {
+				m.log.Debugf("drop-from-index-old-deleted %v %v", i.ContentID, i.Timestamp())
+				delete(bld, i.ContentID)
 			}
-		})
+		}
 
 		m.log.Debugf("finished drop-content-deleted-before %v", opt.DropDeletedBefore)
 	}
 }
 
-func addIndexBlobsToBuilder(ctx context.Context, enc *EncryptionManager, bld index.Builder, indexBlobID blob.ID) error {
+func addIndexBlobsToBuilder(ctx context.Context, enc *EncryptionManager, bld index.BuilderCreator, indexBlobID blob.ID) error {
 	var data gather.WriteBuffer
 	defer data.Close()
 

@@ -47,11 +47,10 @@ func testCache(t *testing.T, cache committedContentIndexCache, fakeTime *faketim
 		t.Fatal("openIndex unexpectedly succeeded")
 	}
 
-	b1 := index.NewNormalBuilder()
-	b1.Add(index.Info{PackBlobID: "p1234", ContentID: mustParseID(t, "c1")})
-	b1.Add(index.Info{PackBlobID: "p1234", ContentID: mustParseID(t, "c2")})
-
-	require.NoError(t, cache.addContentToCache(ctx, "ndx1", mustBuildIndex(t, b1)))
+	require.NoError(t, cache.addContentToCache(ctx, "ndx1", mustBuildIndex(t, index.Builder{
+		mustParseID(t, "c1"): Info{PackBlobID: "p1234", ContentID: mustParseID(t, "c1")},
+		mustParseID(t, "c2"): Info{PackBlobID: "p1234", ContentID: mustParseID(t, "c2")},
+	})))
 
 	has, err = cache.hasIndexBlobID(ctx, "ndx1")
 	require.NoError(t, err)
@@ -60,17 +59,15 @@ func testCache(t *testing.T, cache committedContentIndexCache, fakeTime *faketim
 		t.Fatal("hasIndexBlobID invalid response, expected true")
 	}
 
-	b2 := index.NewNormalBuilder()
-	b2.Add(index.Info{PackBlobID: "p2345", ContentID: mustParseID(t, "c3")})
-	b2.Add(index.Info{PackBlobID: "p2345", ContentID: mustParseID(t, "c4")})
+	require.NoError(t, cache.addContentToCache(ctx, "ndx2", mustBuildIndex(t, index.Builder{
+		mustParseID(t, "c3"): Info{PackBlobID: "p2345", ContentID: mustParseID(t, "c3")},
+		mustParseID(t, "c4"): Info{PackBlobID: "p2345", ContentID: mustParseID(t, "c4")},
+	})))
 
-	require.NoError(t, cache.addContentToCache(ctx, "ndx2", mustBuildIndex(t, b2)))
-
-	b3 := index.NewNormalBuilder()
-	b3.Add(index.Info{PackBlobID: "p2345", ContentID: mustParseID(t, "c3")})
-	b3.Add(index.Info{PackBlobID: "p2345", ContentID: mustParseID(t, "c4")})
-
-	require.NoError(t, cache.addContentToCache(ctx, "ndx2", mustBuildIndex(t, b3)))
+	require.NoError(t, cache.addContentToCache(ctx, "ndx2", mustBuildIndex(t, index.Builder{
+		mustParseID(t, "c3"): Info{PackBlobID: "p2345", ContentID: mustParseID(t, "c3")},
+		mustParseID(t, "c4"): Info{PackBlobID: "p2345", ContentID: mustParseID(t, "c4")},
+	})))
 
 	ndx1, err := cache.openIndex(ctx, "ndx1")
 	require.NoError(t, err)

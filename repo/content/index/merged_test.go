@@ -244,7 +244,7 @@ func iterateIDRange(t *testing.T, m Index, r IDRange) []ID {
 }
 
 func indexWithItems(items ...Info) (Index, error) {
-	b := NewNormalBuilder()
+	b := make(Builder)
 
 	for _, it := range items {
 		b.Add(it)
