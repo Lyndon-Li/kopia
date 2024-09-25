@@ -23,7 +23,7 @@ func (ic *InfoCompact) Less(other llrb.Item) bool {
 	if other.(*InfoCompact) == minInfoCompact {
 		return false
 	}
-	return ic.ContentID.less(*other.(*InfoCompact).ContentID)
+	return ic.ContentID.less(other.(*InfoCompact).ContentID)
 }
 
 type blobIDWrap struct {
@@ -60,7 +60,7 @@ func (b *largeBuilder) Clone() Builder {
 func (b *largeBuilder) Add(i Info) {
 	cid := i.ContentID
 
-	found := b.indexStore.Get(&InfoCompact{ContentID: &cid})
+	found := b.indexStore.Get(&InfoCompact{ContentID: cid})
 	if found == nil || contentInfoGreaterThanStruct(&i, &Info{
 		PackBlobID:       *found.(*InfoCompact).PackBlobID,
 		TimestampSeconds: found.(*InfoCompact).TimestampSeconds,
@@ -76,7 +76,7 @@ func (b *largeBuilder) Add(i Info) {
 
 		_ = b.indexStore.ReplaceOrInsert(&InfoCompact{
 			PackBlobID:          id,
-			ContentID:           &cid,
+			ContentID:           cid,
 			TimestampSeconds:    i.TimestampSeconds,
 			OriginalLength:      i.OriginalLength,
 			PackedLength:        i.PackedLength,
@@ -111,7 +111,7 @@ func (b *largeBuilder) Length() int {
 }
 
 func (b *largeBuilder) Find(cid ID) (Info, bool) {
-	found := b.indexStore.Get(&InfoCompact{ContentID: &cid})
+	found := b.indexStore.Get(&InfoCompact{ContentID: cid})
 	if found == nil {
 		return Info{}, false
 	} else {
@@ -122,7 +122,7 @@ func (b *largeBuilder) Find(cid ID) (Info, bool) {
 func (b *largeBuilder) IterateRaw(callback func(cid ID, i BuilderItem)) {
 	b.iterating = true
 	b.indexStore.AscendGreaterOrEqual(minInfoCompact, func(v llrb.Item) bool {
-		callback(*v.(*InfoCompact).ContentID, v.(*InfoCompact))
+		callback(v.(*InfoCompact).ContentID, v.(*InfoCompact))
 		return true
 	})
 	b.iterating = false
@@ -131,7 +131,7 @@ func (b *largeBuilder) IterateRaw(callback func(cid ID, i BuilderItem)) {
 func (b *largeBuilder) Iterate(callback func(cid ID, i Info)) {
 	b.iterating = true
 	b.indexStore.AscendGreaterOrEqual(minInfoCompact, func(v llrb.Item) bool {
-		callback(*v.(*InfoCompact).ContentID, FlatenInfo(v.(*InfoCompact)))
+		callback(v.(*InfoCompact).ContentID, FlatenInfo(v.(*InfoCompact)))
 		return true
 	})
 	b.iterating = false
@@ -142,7 +142,7 @@ func (b *largeBuilder) Delete(cid ID) {
 		panic("modification during iteration is not supported")
 	}
 
-	b.indexStore.Delete(&InfoCompact{ContentID: &cid})
+	b.indexStore.Delete(&InfoCompact{ContentID: cid})
 }
 
 func (b *largeBuilder) sortedContents() []BuilderItem {
@@ -264,6 +264,13 @@ func (b *largeBuilder) BuildShards(indexVersion int, stable bool, shardSize int)
 	}
 
 	fmt.Printf("%v", b.Length())
+	for _, s := range shardedBuilders {
+		for _, it := range s {
+			if it.GetPackBlobID() == "fake-abc" {
+				fmt.Printf("keep sorted %v, %v", it.GetContentID(), it.GetPackBlobID())
+			}
+		}
+	}
 
 	return dataShards, closeShards, nil
 }

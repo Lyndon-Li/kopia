@@ -562,11 +562,6 @@ func buildV2(sortedInfos []BuilderItem, output io.Writer) error {
 	}
 
 	genProfile("")
-	for _, it := range sortedInfos {
-		if it.GetPackBlobID() == "fake-abc" {
-			fmt.Printf("keep sorted %v, %v", it.GetContentID(), it.GetPackBlobID())
-		}
-	}
 
 	return errors.Wrap(w.Flush(), "error flushing index")
 }

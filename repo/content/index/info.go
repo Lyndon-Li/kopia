@@ -23,12 +23,12 @@ type Info struct {
 
 type InfoCompact struct {
 	PackBlobID          *blob.ID
-	ContentID           *ID
 	TimestampSeconds    int64
 	OriginalLength      uint32
 	PackedLength        uint32
 	PackOffset          uint32
 	CompressionHeaderID compression.HeaderID
+	ContentID           ID
 	Deleted             bool
 	FormatVersion       byte
 	EncryptionKeyID     byte
@@ -113,7 +113,7 @@ func (i *InfoCompact) GetPPackBlobID() *blob.ID {
 }
 
 func (i *InfoCompact) GetContentID() ID {
-	return *i.ContentID
+	return i.ContentID
 }
 
 func (i *InfoCompact) GetTimestampSeconds() int64 {
@@ -151,7 +151,7 @@ func (i *InfoCompact) GetEncryptionKeyID() byte {
 func FlatenInfo(ic *InfoCompact) Info {
 	return Info{
 		PackBlobID:          *ic.PackBlobID,
-		ContentID:           *ic.ContentID,
+		ContentID:           ic.ContentID,
 		TimestampSeconds:    ic.TimestampSeconds,
 		OriginalLength:      ic.OriginalLength,
 		PackedLength:        ic.PackedLength,
