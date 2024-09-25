@@ -263,14 +263,14 @@ func (b *largeBuilder) BuildShards(indexVersion int, stable bool, shardSize int)
 		dataShards = append(dataShards, buf.Bytes())
 	}
 
-	fmt.Printf("%v", b.Length())
-	for _, s := range shardedBuilders {
-		for _, it := range s {
-			if it.GetPackBlobID() == "fake-abc" {
-				fmt.Printf("keep sorted %v, %v", it.GetContentID(), it.GetPackBlobID())
-			}
-		}
-	}
+	// fmt.Printf("%v", b.Length())
+	// for _, s := range shardedBuilders {
+	// 	for _, it := range s {
+	// 		if it.GetPackBlobID() == "fake-abc" {
+	// 			fmt.Printf("keep sorted %v, %v", it.GetContentID(), it.GetPackBlobID())
+	// 		}
+	// 	}
+	// }
 
 	return dataShards, closeShards, nil
 }
