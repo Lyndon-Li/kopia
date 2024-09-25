@@ -28,7 +28,6 @@ type Builder interface {
 	Iterate(func(ID, Info))
 	IterateRaw(func(ID, BuilderItem))
 	Delete(ID)
-	SortedContents() []BuilderItem
 }
 
 type normalBuilder struct {
@@ -124,7 +123,7 @@ func init() {
 // sortedContents returns the list of []BuilderItem sorted lexicographically using bucket sort
 // sorting is optimized based on the format of content IDs (optional single-character
 // alphanumeric prefix (0-9a-z), followed by hexadecimal digits (0-9a-f).
-func (b *normalBuilder) SortedContents() []BuilderItem {
+func (b *normalBuilder) sortedContents() []BuilderItem {
 	var buckets [36 * 16][]BuilderItem
 
 	// phase 1 - bucketize into 576 (36 *16) separate lists
@@ -195,12 +194,16 @@ func (b *normalBuilder) Build(output io.Writer, version int) error {
 
 // BuildStable writes the pack index to the provided output.
 func (b *normalBuilder) BuildStable(output io.Writer, version int) error {
+	return buildSortedContents(b.sortedContents(), output, version)
+}
+
+func buildSortedContents(contents []BuilderItem, output io.Writer, version int) error {
 	switch version {
 	case Version1:
-		return buildV1(b, output)
+		return buildV1(contents, output)
 
 	case Version2:
-		return buildV2(b, output)
+		return buildV2(contents, output)
 
 	default:
 		return errors.Errorf("unsupported index version: %v", version)

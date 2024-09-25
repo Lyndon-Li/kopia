@@ -59,7 +59,8 @@ func (i Info) GetPackBlobID() blob.ID {
 }
 
 func (i Info) GetPPackBlobID() *blob.ID {
-	return &i.PackBlobID
+	packBlobID := i.PackBlobID
+	return &packBlobID
 }
 
 func (i Info) GetContentID() ID {

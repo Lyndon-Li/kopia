@@ -2,9 +2,14 @@ package index
 
 import (
 	"crypto/rand"
+	"fmt"
 	"hash/fnv"
 	"io"
+	"os"
+	"runtime"
+	"runtime/pprof"
 
+	"github.com/google/uuid"
 	"github.com/pkg/errors"
 
 	"github.com/kopia/kopia/internal/gather"
@@ -140,7 +145,7 @@ func (b *largeBuilder) Delete(cid ID) {
 	b.indexStore.Delete(&InfoCompact{ContentID: &cid})
 }
 
-func (b *largeBuilder) SortedContents() []BuilderItem {
+func (b *largeBuilder) sortedContents() []BuilderItem {
 	result := make([]BuilderItem, 0, b.Length())
 
 	b.indexStore.AscendGreaterOrEqual(minInfoCompact, func(v llrb.Item) bool {
@@ -173,32 +178,20 @@ func (b *largeBuilder) Build(output io.Writer, version int) error {
 
 // BuildStable writes the pack index to the provided output.
 func (b *largeBuilder) BuildStable(output io.Writer, version int) error {
-	switch version {
-	case Version1:
-		return buildV1(b, output)
-
-	case Version2:
-		return buildV2(b, output)
-
-	default:
-		return errors.Errorf("unsupported index version: %v", version)
-	}
+	return buildSortedContents(b.sortedContents(), output, version)
 }
 
-func (b *largeBuilder) shard(maxShardSize int) []*largeBuilder {
+func (b *largeBuilder) shard(maxShardSize int) [][]BuilderItem {
 	numShards := (b.Length() + maxShardSize - 1) / maxShardSize
 	if numShards <= 1 {
 		if b.Length() == 0 {
-			return []*largeBuilder{}
+			return [][]BuilderItem{}
 		}
 
-		return []*largeBuilder{b}
+		return [][]BuilderItem{b.sortedContents()}
 	}
 
-	result := make([]*largeBuilder, numShards)
-	for i := range result {
-		result[i] = newLargeBuilder()
-	}
+	result := make([][]BuilderItem, numShards)
 
 	b.indexStore.AscendGreaterOrEqual(minInfoCompact, func(v llrb.Item) bool {
 		h := fnv.New32a()
@@ -206,15 +199,15 @@ func (b *largeBuilder) shard(maxShardSize int) []*largeBuilder {
 
 		shard := h.Sum32() % uint32(numShards)
 
-		result[shard].indexStore.ReplaceOrInsert(v)
+		result[shard] = append(result[shard], v.(*InfoCompact))
 
 		return true
 	})
 
-	var nonEmpty []*largeBuilder
+	var nonEmpty [][]BuilderItem
 
 	for _, r := range result {
-		if r.Length() > 0 {
+		if len(r) > 0 {
 			nonEmpty = append(nonEmpty, r)
 		}
 	}
@@ -242,20 +235,16 @@ func (b *largeBuilder) BuildShards(indexVersion int, stable bool, shardSize int)
 		}
 	}
 
-	//genProfile("after-shard")
-
 	for _, s := range shardedBuilders {
 		buf := gather.NewWriteBuffer()
 
 		dataShardsBuf = append(dataShardsBuf, buf)
 
-		if err := s.BuildStable(buf, indexVersion); err != nil {
+		if err := buildSortedContents(s, buf, indexVersion); err != nil {
 			closeShards()
 
 			return nil, nil, errors.Wrap(err, "error building index shard")
 		}
-
-		//genProfile(fmt.Sprintf("build-shard-%v", i))
 
 		if !stable {
 			if _, err := rand.Read(randomSuffix[:]); err != nil {
@@ -274,20 +263,19 @@ func (b *largeBuilder) BuildShards(indexVersion int, stable bool, shardSize int)
 		dataShards = append(dataShards, buf.Bytes())
 	}
 
-	//fmt.Printf("%v", b.Length())
-	//genProfile("after-build")
+	fmt.Printf("%v", b.Length())
 
 	return dataShards, closeShards, nil
 }
 
-// func genProfile(n string) {
-// 	if n == "" {
-// 		n = uuid.NewString()
-// 	}
+func genProfile(n string) {
+	if n == "" {
+		n = uuid.NewString()
+	}
 
-// 	name := fmt.Sprintf("/tmp/profile-%s.pb.gz", n)
-// 	f, _ := os.Create(name)
-// 	defer f.Close()
-// 	runtime.GC()
-// 	pprof.WriteHeapProfile(f)
-// }
+	name := fmt.Sprintf("/tmp/profile-%s.pb.gz", n)
+	f, _ := os.Create(name)
+	defer f.Close()
+	runtime.GC()
+	pprof.WriteHeapProfile(f)
+}

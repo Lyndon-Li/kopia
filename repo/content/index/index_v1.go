@@ -266,8 +266,7 @@ type indexBuilderV1 struct {
 }
 
 // buildV1 writes the pack index to the provided output.
-func buildV1(b Builder, output io.Writer) error {
-	allContents := b.SortedContents()
+func buildV1(allContents []BuilderItem, output io.Writer) error {
 	b1 := &indexBuilderV1{
 		packBlobIDOffsets: map[blob.ID]uint32{},
 		keyLength:         -1,

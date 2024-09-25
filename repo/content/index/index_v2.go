@@ -495,9 +495,7 @@ func newIndexBuilderV2(sortedInfos []BuilderItem) (*indexBuilderV2, error) {
 }
 
 // buildV2 writes the pack index to the provided output.
-func buildV2(b Builder, output io.Writer) error {
-	sortedInfos := b.SortedContents()
-
+func buildV2(sortedInfos []BuilderItem, output io.Writer) error {
 	b2, err := newIndexBuilderV2(sortedInfos)
 	if err != nil {
 		return err
@@ -509,7 +507,7 @@ func buildV2(b Builder, output io.Writer) error {
 	extraData := b2.prepareExtraData(sortedInfos)
 
 	if b2.keyLength <= 1 {
-		return errors.Errorf("invalid key length: %v for %v", b2.keyLength, b.Length())
+		return errors.Errorf("invalid key length: %v for %v", b2.keyLength, len(sortedInfos))
 	}
 
 	// write header
@@ -563,14 +561,12 @@ func buildV2(b Builder, output io.Writer) error {
 		return errors.Wrap(err, "error writing extra data")
 	}
 
-	// genProfile("")
-	// fmt.Printf("%v", len(sortedInfos))
-	// for _, it := range sortedInfos {
-	// 	if it.GetPackBlobID() == "fake-abc" {
-	// 		fmt.Printf("%v", it.GetContentID())
-	// 	}
-	// }
-	// fmt.Printf("%v", b.Length())
+	genProfile("")
+	for _, it := range sortedInfos {
+		if it.GetPackBlobID() == "fake-abc" {
+			fmt.Printf("keep sorted %v, %v", it.GetContentID(), it.GetPackBlobID())
+		}
+	}
 
 	return errors.Wrap(w.Flush(), "error flushing index")
 }

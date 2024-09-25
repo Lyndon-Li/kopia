@@ -275,7 +275,7 @@ func TestPackIndexPerContentLimits(t *testing.T) {
 		var result bytes.Buffer
 
 		if tc.errMsg == "" {
-			require.NoError(t, buildV2(b, &result))
+			require.NoError(t, buildV2(b.sortedContents(), &result))
 
 			pi, err := Open(result.Bytes(), nil, func() int { return fakeEncryptionOverhead })
 			require.NoError(t, err)
@@ -288,7 +288,7 @@ func TestPackIndexPerContentLimits(t *testing.T) {
 
 			require.Equal(t, got, tc.info)
 		} else {
-			err := buildV2(b, &result)
+			err := buildV2(b.sortedContents(), &result)
 			require.Error(t, err)
 			require.Contains(t, err.Error(), tc.errMsg)
 		}
@@ -306,7 +306,7 @@ func TestSortedContents(t *testing.T) {
 		})
 	}
 
-	got := b.SortedContents()
+	got := b.sortedContents()
 
 	var last ID
 	for _, info := range got {
@@ -352,7 +352,7 @@ func TestSortedContents2(t *testing.T) {
 		ContentID: mustParseID(t, "h1023"),
 	})
 
-	got := b.SortedContents()
+	got := b.sortedContents()
 
 	var last ID
 
@@ -379,7 +379,7 @@ func TestPackIndexV2TooManyUniqueFormats(t *testing.T) {
 		})
 	}
 
-	require.NoError(t, buildV2(b, io.Discard))
+	require.NoError(t, buildV2(b.sortedContents(), io.Discard))
 
 	// add one more to push it over the edge
 	b.Add(Info{
@@ -388,7 +388,7 @@ func TestPackIndexV2TooManyUniqueFormats(t *testing.T) {
 		CompressionHeaderID: compression.HeaderID(5000),
 	})
 
-	err := buildV2(b, io.Discard)
+	err := buildV2(b.sortedContents(), io.Discard)
 	require.Error(t, err)
 	require.Equal(t, "unsupported - too many unique formats 256 (max 255)", err.Error())
 }
@@ -453,7 +453,7 @@ func fuzzTest(rnd *rand.Rand, originalData []byte, rounds int, callback func(d [
 }
 
 func TestShard(t *testing.T) {
-	b := newLargeBuilder()
+	b := newNormalBuilder()
 
 	// generate 10000 IDs in random order
 	ids := make([]int, 10000)
@@ -488,7 +488,7 @@ func TestShard(t *testing.T) {
 		verifyAllShardedIDs(t, b.shard(2000), b.Length(), 5))
 }
 
-func verifyAllShardedIDs(t *testing.T, sharded []*largeBuilder, numTotal, numShards int) []int {
+func verifyAllShardedIDs(t *testing.T, sharded []Builder, numTotal, numShards int) []int {
 	t.Helper()
 
 	require.Len(t, sharded, numShards)
