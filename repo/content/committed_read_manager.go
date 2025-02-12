@@ -110,6 +110,8 @@ type SharedManager struct {
 	internalLogger *zap.SugaredLogger // backing logger for 'sharedBaseLogger'
 
 	metricsStruct
+
+	combineSmallIndexes bool
 }
 
 // IsReadOnly returns whether this instance of the SharedManager only supports
@@ -238,7 +240,7 @@ func (sm *SharedManager) loadPackIndexesLocked(ctx context.Context) error {
 
 		err = sm.committedContents.fetchIndexBlobs(ctx, sm.permissiveCacheLoading, indexBlobIDs)
 		if err == nil {
-			err = sm.committedContents.use(ctx, indexBlobIDs, ignoreDeletedBefore)
+			err = sm.committedContents.use(ctx, indexBlobIDs, ignoreDeletedBefore, sm.combineSmallIndexes)
 			if err != nil {
 				return err
 			}
@@ -625,6 +627,7 @@ func NewSharedManager(ctx context.Context, st blob.Storage, prov format.Provider
 		checkInvariantsOnUnlock: os.Getenv("KOPIA_VERIFY_INVARIANTS") != "",
 		repoLogManager:          repoLogManager,
 		contextLogger:           logging.Module(FormatLogModule)(ctx),
+		combineSmallIndexes:     !opts.DisableCombineSmallIndexes,
 
 		metricsStruct: initMetricsStruct(mr),
 	}

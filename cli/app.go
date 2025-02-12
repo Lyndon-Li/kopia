@@ -136,6 +136,7 @@ type App struct {
 	keyRingEnabled                bool
 	persistCredentials            bool
 	disableInternalLog            bool
+	disableCombineSmallIndexes    bool
 	dumpAllocatorStats            bool
 	AdvancedCommands              string
 	cliStorageProviders           []StorageProvider
@@ -277,6 +278,7 @@ func (c *App) setup(app *kingpin.Application) {
 	app.Flag("password", "Repository password.").Envar(c.EnvName("KOPIA_PASSWORD")).Short('p').StringVar(&c.password)
 	app.Flag("persist-credentials", "Persist credentials").Default("true").Envar(c.EnvName("KOPIA_PERSIST_CREDENTIALS_ON_CONNECT")).BoolVar(&c.persistCredentials)
 	app.Flag("disable-internal-log", "Disable internal log").Hidden().Envar(c.EnvName("KOPIA_DISABLE_INTERNAL_LOG")).BoolVar(&c.disableInternalLog)
+	app.Flag("disable-combine-small-indexes", "Disable combining small indexes during repository open").Hidden().Default("false").Envar(c.EnvName("KOPIA_DISABLE_COMBINE_SMALL_INDEXES")).BoolVar(&c.disableCombineSmallIndexes)
 	app.Flag("advanced-commands", "Enable advanced (and potentially dangerous) commands.").Hidden().Envar(c.EnvName("KOPIA_ADVANCED_COMMANDS")).StringVar(&c.AdvancedCommands)
 	app.Flag("track-releasable", "Enable tracking of releasable resources.").Hidden().Envar(c.EnvName("KOPIA_TRACK_RELEASABLE")).StringsVar(&c.trackReleasable)
 	app.Flag("dump-allocator-stats", "Dump allocator stats at the end of execution.").Hidden().Envar(c.EnvName("KOPIA_DUMP_ALLOCATOR_STATS")).BoolVar(&c.dumpAllocatorStats)

@@ -158,7 +158,7 @@ func (c *committedContentIndex) indexFilesChanged(indexFiles []blob.ID) bool {
 }
 
 // +checklocks:c.mu
-func (c *committedContentIndex) merge(ctx context.Context, indexFiles []blob.ID) (index.Merged, map[blob.ID]index.Index, error) {
+func (c *committedContentIndex) merge(ctx context.Context, indexFiles []blob.ID, combineSmallIndexes bool) (index.Merged, map[blob.ID]index.Index, error) {
 	var (
 		newMerged   index.Merged
 		newlyOpened index.Merged // new indexes that were not in c.inUse before
@@ -188,21 +188,30 @@ func (c *committedContentIndex) merge(ctx context.Context, indexFiles []blob.ID)
 		newUsedMap[e] = ndx
 	}
 
-	mergedAndCombined, err := c.combineSmallIndexes(ctx, newMerged)
-	if err != nil {
-		newlyOpened.Close() //nolint:errcheck
+	var mergedAndCombined index.Merged
+	if combineSmallIndexes {
+		cmb, err := c.combineSmallIndexes(ctx, newMerged)
+		if err != nil {
+			newlyOpened.Close() //nolint:errcheck
 
-		return nil, nil, errors.Wrap(err, "unable to combine small indexes")
+			return nil, nil, errors.Wrap(err, "unable to combine small indexes")
+		}
+
+		mergedAndCombined = cmb
+
+		c.log.Debugw("combined index segments", "original", len(newMerged), "merged", len(mergedAndCombined))
+	} else {
+		mergedAndCombined = newMerged
+
+		c.log.Debug("skip combining small indexes as it is disabled")
 	}
-
-	c.log.Debugw("combined index segments", "original", len(newMerged), "merged", len(mergedAndCombined))
 
 	return mergedAndCombined, newUsedMap, nil
 }
 
 // Uses indexFiles for indexing. An error is returned if the
 // indices cannot be read for any reason.
-func (c *committedContentIndex) use(ctx context.Context, indexFiles []blob.ID, ignoreDeletedBefore time.Time) error {
+func (c *committedContentIndex) use(ctx context.Context, indexFiles []blob.ID, ignoreDeletedBefore time.Time, combineSmallIndexes bool) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -214,7 +223,7 @@ func (c *committedContentIndex) use(ctx context.Context, indexFiles []blob.ID, i
 
 	c.log.Debugf("use-indexes %v", indexFiles)
 
-	mergedAndCombined, newInUse, err := c.merge(ctx, indexFiles)
+	mergedAndCombined, newInUse, err := c.merge(ctx, indexFiles, combineSmallIndexes)
 	if err != nil {
 		return err
 	}

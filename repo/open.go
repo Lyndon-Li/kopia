@@ -76,6 +76,8 @@ type Options struct {
 
 	// test-only flags
 	TestOnlyIgnoreMissingRequiredFeatures bool // ignore missing features
+
+	DisableCombineSmallIndexes bool // Disable combining small indexes to save memory and time on repository open
 }
 
 // ErrInvalidPassword is returned when repository password is invalid.
@@ -241,9 +243,10 @@ func openDirect(ctx context.Context, configFile string, lc *LocalConfig, passwor
 func openWithConfig(ctx context.Context, st blob.Storage, cliOpts ClientOptions, password string, options *Options, cacheOpts *content.CachingOptions, configFile string) (DirectRepository, error) {
 	cacheOpts = cacheOpts.CloneOrDefault()
 	cmOpts := &content.ManagerOptions{
-		TimeNow:                defaultTime(options.TimeNowFunc),
-		DisableInternalLog:     options.DisableInternalLog,
-		PermissiveCacheLoading: cliOpts.PermissiveCacheLoading,
+		TimeNow:                    defaultTime(options.TimeNowFunc),
+		DisableInternalLog:         options.DisableInternalLog,
+		DisableCombineSmallIndexes: options.DisableCombineSmallIndexes,
+		PermissiveCacheLoading:     cliOpts.PermissiveCacheLoading,
 	}
 
 	mr := metrics.NewRegistry()
