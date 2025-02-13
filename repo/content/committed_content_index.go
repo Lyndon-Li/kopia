@@ -221,18 +221,7 @@ func (c *committedContentIndex) use(ctx context.Context, indexFiles []blob.ID, i
 
 	c.rev.Add(1)
 	c.merged = mergedAndCombined
-
-	oldInUse := c.inUse
 	c.inUse = newInUse
-
-	// close indices that were previously in use but are no longer.
-	for k, old := range oldInUse {
-		if newInUse[k] == nil {
-			if err := old.Close(); err != nil {
-				c.log.Errorf("unable to close unused index file: %v", err)
-			}
-		}
-	}
 
 	if err := c.cache.expireUnused(ctx, indexFiles); err != nil {
 		c.log.Errorf("unable to expire unused index files: %v", err)
@@ -256,7 +245,7 @@ func (c *committedContentIndex) combineSmallIndexes(ctx context.Context, m index
 		return m, nil
 	}
 
-	b := index.Builder{}
+	b := index.NewOneUseBuilder()
 
 	for _, ndx := range toMerge {
 		if err := ndx.Iterate(index.AllIDs, func(i index.Info) error {
@@ -264,6 +253,10 @@ func (c *committedContentIndex) combineSmallIndexes(ctx context.Context, m index
 			return nil
 		}); err != nil {
 			return nil, errors.Wrap(err, "unable to iterate index entries")
+		}
+
+		if err := ndx.Close(); err != nil {
+			c.log.Errorf("unable to close unused index file: %v", err)
 		}
 	}
 

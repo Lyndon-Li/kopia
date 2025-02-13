@@ -87,6 +87,25 @@ func (b *OneUseBuilder) shard(maxShardSize int) [][]*Info {
 	return nonEmpty
 }
 
+// Build writes the pack index to the provided output.
+func (b *OneUseBuilder) Build(output io.Writer, version int) error {
+	if err := b.BuildStable(output, version); err != nil {
+		return err
+	}
+
+	randomSuffix := make([]byte, randomSuffixSize)
+
+	if _, err := rand.Read(randomSuffix); err != nil {
+		return errors.Wrap(err, "error getting random bytes for suffix")
+	}
+
+	if _, err := output.Write(randomSuffix); err != nil {
+		return errors.Wrap(err, "error writing extra random suffix to ensure indexes are always globally unique")
+	}
+
+	return nil
+}
+
 // BuildStable writes the pack index to the provided output.
 func (b *OneUseBuilder) BuildStable(output io.Writer, version int) error {
 	return buildSortedContents(b.sortedContents(), output, version)
