@@ -24,6 +24,32 @@ type Index interface {
 	Iterate(r IDRange, cb func(Info) error) error
 }
 
+type Store interface {
+	Load() error
+	Get() []byte
+	Release()
+	Close() error
+}
+
+type directMemoryStore struct {
+	data []byte
+}
+
+func (s *directMemoryStore) Load() error {
+	return nil
+}
+
+func (s *directMemoryStore) Get() []byte {
+	return s.data
+}
+
+func (s *directMemoryStore) Release() {
+}
+
+func (s *directMemoryStore) Close() error {
+	return nil
+}
+
 // Open reads an Index from a given reader. The caller must call Close() when the index is no longer used.
 func Open(data []byte, closer func() error, v1PerContentOverhead func() int) (Index, error) {
 	h, err := v1ReadHeader(data)
@@ -33,14 +59,45 @@ func Open(data []byte, closer func() error, v1PerContentOverhead func() int) (In
 
 	switch h.version {
 	case Version1:
-		return openV1PackIndex(h, data, closer, uint32(v1PerContentOverhead())) //nolint:gosec
+		return openV1PackIndex(h, &directMemoryStore{data}, uint32(v1PerContentOverhead())) //nolint:gosec
 
 	case Version2:
-		return openV2PackIndex(data, closer)
+		return openV2PackIndex(&directMemoryStore{data})
 
 	default:
 		return nil, errors.Errorf("invalid header format: %v", h.version)
 	}
+}
+
+// OpenWithStore opens an Index from a given store. The caller must call Close() when the index is no longer used.
+func OpenWithStore(store Store, v1PerContentOverhead func() int) (Index, error) {
+	err := store.Load()
+	if err != nil {
+		return nil, errors.Wrap(err, "error to allocate index data")
+	}
+
+	defer store.Release()
+
+	data := store.Get()
+
+	h, err := v1ReadHeader(data)
+	if err != nil {
+		return nil, errors.Wrap(err, "invalid header")
+	}
+
+	var idx Index
+	switch h.version {
+	case Version1:
+		idx, err = openV1PackIndex(h, store, uint32(v1PerContentOverhead())) //nolint:gosec
+
+	case Version2:
+		idx, err = openV2PackIndex(store)
+
+	default:
+		err = errors.Errorf("invalid header format: %v", h.version)
+	}
+
+	return idx, err
 }
 
 func safeSlice(data []byte, offset int64, length int) (v []byte, err error) {

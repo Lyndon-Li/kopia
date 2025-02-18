@@ -5,7 +5,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
+	"unsafe"
 
 	"github.com/edsrzf/mmap-go"
 	"github.com/pkg/errors"
@@ -29,6 +32,19 @@ type diskCommittedContentIndexCache struct {
 	minSweepAge          time.Duration
 }
 
+type memMapInfo struct {
+	handle *os.File
+	mapped mmap.MMap
+}
+
+type memMapStore struct {
+	fullpath string
+	mapped   unsafe.Pointer
+	refCount int64
+	lock     sync.Mutex
+	log      logging.Logger
+}
+
 func (c *diskCommittedContentIndexCache) indexBlobPath(indexBlobID blob.ID) string {
 	return filepath.Join(c.dirname, string(indexBlobID)+simpleIndexSuffix)
 }
@@ -36,23 +52,82 @@ func (c *diskCommittedContentIndexCache) indexBlobPath(indexBlobID blob.ID) stri
 func (c *diskCommittedContentIndexCache) openIndex(ctx context.Context, indexBlobID blob.ID) (index.Index, error) {
 	fullpath := c.indexBlobPath(indexBlobID)
 
-	f, closeMmap, err := c.mmapOpenWithRetry(fullpath)
+	ndx, err := index.OpenWithStore(&memMapStore{
+		fullpath: fullpath,
+		log:      c.log,
+	}, c.v1PerContentOverhead)
 	if err != nil {
-		return nil, err
-	}
-
-	ndx, err := index.Open(f, closeMmap, c.v1PerContentOverhead)
-	if err != nil {
-		closeMmap() //nolint:errcheck
 		return nil, errors.Wrapf(err, "error opening index from %v", indexBlobID)
 	}
 
 	return ndx, nil
 }
 
+func (s *memMapStore) Load() error {
+	ref := atomic.AddInt64(&s.refCount, 1)
+	if ref > 1 && atomic.LoadPointer(&s.mapped) != nil {
+		return nil
+	}
+
+	s.lock.Lock()
+	defer s.lock.Unlock()
+
+	if atomic.LoadPointer(&s.mapped) != nil {
+		return nil
+	}
+
+	s.log.Infof("-------mapping index file %s", s.fullpath)
+
+	m, err := mmapOpenWithRetry(s.fullpath, s.log)
+	if err != nil {
+		atomic.AddInt64(&s.refCount, -1)
+		return err
+	}
+
+	atomic.StorePointer(&s.mapped, unsafe.Pointer(m))
+
+	return nil
+}
+
+func (s *memMapStore) Get() []byte {
+	p := atomic.LoadPointer(&s.mapped)
+	return (*memMapInfo)(p).mapped
+}
+
+func (s *memMapStore) Release() {
+	ref := atomic.AddInt64(&s.refCount, -1)
+	if ref > 0 {
+		return
+	}
+
+	s.lock.Lock()
+	defer s.lock.Unlock()
+
+	if atomic.LoadInt64(&s.refCount) > 0 {
+		return
+	}
+
+	s.log.Infof("-------unmapping index file %s", s.fullpath)
+
+	p := (*memMapInfo)(atomic.SwapPointer(&s.mapped, nil))
+	if p != nil {
+		if err := p.mapped.Unmap(); err != nil {
+			s.log.Warnf("failed to unmap index %v, err: %v", s.fullpath, err)
+		}
+
+		if err := p.handle.Close(); err != nil {
+			s.log.Warnf("failed to close index %v, err: %v", s.fullpath)
+		}
+	}
+}
+
+func (s *memMapStore) Close() error {
+	return nil
+}
+
 // mmapOpenWithRetry attempts mmap.Open() with exponential back-off to work around rare issue specific to Windows where
 // we can't open the file right after it has been written.
-func (c *diskCommittedContentIndexCache) mmapOpenWithRetry(path string) (mmap.MMap, func() error, error) {
+func mmapOpenWithRetry(path string, log logging.Logger) (*memMapInfo, error) {
 	const (
 		maxRetries    = 8
 		startingDelay = 10 * time.Millisecond
@@ -65,7 +140,7 @@ func (c *diskCommittedContentIndexCache) mmapOpenWithRetry(path string) (mmap.MM
 	retryCount := 0
 	for err != nil && retryCount < maxRetries {
 		retryCount++
-		c.log.Debugf("retry #%v unable to mmap.Open(): %v", retryCount, err)
+		log.Debugf("retry #%v unable to mmap.Open(): %v", retryCount, err)
 		time.Sleep(nextDelay)
 		nextDelay *= 2
 
@@ -73,27 +148,17 @@ func (c *diskCommittedContentIndexCache) mmapOpenWithRetry(path string) (mmap.MM
 	}
 
 	if err != nil {
-		return nil, nil, errors.Wrap(err, "unable to open file despite retries")
+		return nil, errors.Wrap(err, "unable to open file despite retries")
 	}
 
 	mm, err := mmap.Map(f, mmap.RDONLY, 0)
 	if err != nil {
 		f.Close() //nolint:errcheck
 
-		return nil, nil, errors.Wrap(err, "mmap error")
+		return nil, errors.Wrap(err, "mmap error")
 	}
 
-	return mm, func() error {
-		if err2 := mm.Unmap(); err2 != nil {
-			return errors.Wrapf(err2, "error unmapping index %v", path)
-		}
-
-		if err2 := f.Close(); err2 != nil {
-			return errors.Wrapf(err2, "error closing index %v", path)
-		}
-
-		return nil
-	}, nil
+	return &memMapInfo{f, mm}, nil
 }
 
 func (c *diskCommittedContentIndexCache) hasIndexBlobID(ctx context.Context, indexBlobID blob.ID) (bool, error) {

@@ -137,8 +137,7 @@ type indexV2FormatInfo struct {
 
 type indexV2 struct {
 	hdr         v2HeaderInfo
-	data        []byte
-	closer      func() error
+	store       Store
 	formats     []indexV2FormatInfo
 	packBlobIDs []blob.ID
 }
@@ -224,6 +223,13 @@ func (b *indexV2) ApproximateCount() int {
 // The iteration ends when the callback returns an error, which is propagated to the caller or when
 // all contents have been visited.
 func (b *indexV2) Iterate(r IDRange, cb func(Info) error) error {
+	err := b.store.Load()
+	if err != nil {
+		return err
+	}
+
+	defer b.store.Release()
+
 	startPos, err := b.findEntryPosition(r.StartID)
 	if err != nil {
 		return errors.Wrap(err, "could not find starting position")
@@ -232,7 +238,7 @@ func (b *indexV2) Iterate(r IDRange, cb func(Info) error) error {
 	var tmp Info
 
 	for i := startPos; i < b.hdr.entryCount; i++ {
-		entry, err := safeSlice(b.data, b.entryOffset(i), int(b.hdr.entryStride))
+		entry, err := safeSlice(b.store.Get(), b.entryOffset(i), int(b.hdr.entryStride))
 		if err != nil {
 			return errors.Wrap(err, "unable to read from index")
 		}
@@ -268,7 +274,7 @@ func (b *indexV2) findEntryPosition(contentID IDPrefix) (int, error) {
 			return false
 		}
 
-		entryBuf, err := safeSlice(b.data, b.entryOffset(p), b.hdr.keySize)
+		entryBuf, err := safeSlice(b.store.Get(), b.entryOffset(p), b.hdr.keySize)
 		if err != nil {
 			readErr = err
 			return false
@@ -288,7 +294,7 @@ func (b *indexV2) findEntryPositionExact(idBytes []byte) (int, error) {
 			return false
 		}
 
-		entryBuf, err := safeSlice(b.data, b.entryOffset(p), b.hdr.keySize)
+		entryBuf, err := safeSlice(b.store.Get(), b.entryOffset(p), b.hdr.keySize)
 		if err != nil {
 			readErr = err
 			return false
@@ -323,7 +329,7 @@ func (b *indexV2) findEntry(contentID ID) ([]byte, error) {
 		return nil, nil
 	}
 
-	entryBuf, err := safeSlice(b.data, b.entryOffset(position), int(b.hdr.entryStride))
+	entryBuf, err := safeSlice(b.store.Get(), b.entryOffset(position), int(b.hdr.entryStride))
 	if err != nil {
 		return nil, errors.Wrap(err, "error reading header")
 	}
@@ -337,6 +343,13 @@ func (b *indexV2) findEntry(contentID ID) ([]byte, error) {
 
 // GetInfo returns information about a given content. If a content is not found, nil is returned.
 func (b *indexV2) GetInfo(contentID ID, result *Info) (bool, error) {
+	err := b.store.Load()
+	if err != nil {
+		return false, err
+	}
+
+	defer b.store.Release()
+
 	e, err := b.findEntry(contentID)
 	if err != nil {
 		return false, err
@@ -355,11 +368,7 @@ func (b *indexV2) GetInfo(contentID ID, result *Info) (bool, error) {
 
 // Close closes the index.
 func (b *indexV2) Close() error {
-	if closer := b.closer; closer != nil {
-		return errors.Wrap(closer(), "error closing index file")
-	}
-
-	return nil
+	return b.store.Close()
 }
 
 type indexBuilderV2 struct {
@@ -678,7 +687,9 @@ func (b *indexBuilderV2) writeIndexValueEntry(w io.Writer, it *Info) error {
 	return errors.Wrap(err, "error writing index value entry")
 }
 
-func openV2PackIndex(data []byte, closer func() error) (Index, error) {
+func openV2PackIndex(store Store) (Index, error) {
+	data := store.Get()
+
 	header, err := safeSlice(data, 0, v2IndexHeaderSize)
 	if err != nil {
 		return nil, errors.Wrap(err, "invalid header")
@@ -734,8 +745,7 @@ func openV2PackIndex(data []byte, closer func() error) (Index, error) {
 
 	return &indexV2{
 		hdr:         hi,
-		data:        data,
-		closer:      closer,
+		store:       store,
 		formats:     parseFormatsBuffer(formatsBuf, int(hi.formatCount)),
 		packBlobIDs: packIDs,
 	}, nil
