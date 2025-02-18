@@ -24,6 +24,15 @@ type Index interface {
 	Iterate(r IDRange, cb func(Info) error) error
 }
 
+type Allocator interface {
+	Allocate() (BufferCloser, error)
+}
+
+type BufferCloser interface {
+	Get() []byte
+	Close() error
+}
+
 // Open reads an Index from a given reader. The caller must call Close() when the index is no longer used.
 func Open(data []byte, closer func() error, v1PerContentOverhead func() int) (Index, error) {
 	h, err := v1ReadHeader(data)
@@ -33,14 +42,43 @@ func Open(data []byte, closer func() error, v1PerContentOverhead func() int) (In
 
 	switch h.version {
 	case Version1:
-		return openV1PackIndex(h, data, closer, uint32(v1PerContentOverhead())) //nolint:gosec
+		return openV1PackIndex(h, data, nil, uint32(v1PerContentOverhead())) //nolint:gosec
 
 	case Version2:
-		return openV2PackIndex(data, closer)
+		return openV2PackIndex(data, nil)
 
 	default:
 		return nil, errors.Errorf("invalid header format: %v", h.version)
 	}
+}
+
+// Open reads an Index from a given allocator. The caller must call Close() when the index is no longer used.
+func OpenWithAllocator(allocator Allocator, v1PerContentOverhead func() int) (Index, error) {
+	data, err := allocator.Allocate()
+	if err != nil {
+		return nil, errors.Wrap(err, "error to allocate index data")
+	}
+
+	h, err := v1ReadHeader(data.Get())
+	if err != nil {
+		return nil, errors.Wrap(err, "invalid header")
+	}
+
+	var idx Index
+	switch h.version {
+	case Version1:
+		idx, err = openV1PackIndex(h, data.Get(), allocator, uint32(v1PerContentOverhead())) //nolint:gosec
+
+	case Version2:
+		idx, err = openV2PackIndex(data.Get(), allocator)
+
+	default:
+		err = errors.Errorf("invalid header format: %v", h.version)
+	}
+
+	data.Close()
+
+	return idx, err
 }
 
 func safeSlice(data []byte, offset int64, length int) (v []byte, err error) {

@@ -138,7 +138,8 @@ type indexV2FormatInfo struct {
 type indexV2 struct {
 	hdr         v2HeaderInfo
 	data        []byte
-	closer      func() error
+	allocator   Allocator
+	allocated   BufferCloser
 	formats     []indexV2FormatInfo
 	packBlobIDs []blob.ID
 }
@@ -224,6 +225,11 @@ func (b *indexV2) ApproximateCount() int {
 // The iteration ends when the callback returns an error, which is propagated to the caller or when
 // all contents have been visited.
 func (b *indexV2) Iterate(r IDRange, cb func(Info) error) error {
+	err := b.ensureAlloc()
+	if err != nil {
+		return err
+	}
+
 	startPos, err := b.findEntryPosition(r.StartID)
 	if err != nil {
 		return errors.Wrap(err, "could not find starting position")
@@ -337,6 +343,11 @@ func (b *indexV2) findEntry(contentID ID) ([]byte, error) {
 
 // GetInfo returns information about a given content. If a content is not found, nil is returned.
 func (b *indexV2) GetInfo(contentID ID, result *Info) (bool, error) {
+	err := b.ensureAlloc()
+	if err != nil {
+		return false, err
+	}
+
 	e, err := b.findEntry(contentID)
 	if err != nil {
 		return false, err
@@ -353,10 +364,24 @@ func (b *indexV2) GetInfo(contentID ID, result *Info) (bool, error) {
 	return true, nil
 }
 
+func (b *indexV2) ensureAlloc() error {
+	if b.data == nil {
+		data, err := b.allocator.Allocate()
+		if err != nil {
+			return errors.Wrap(err, "error to alloc index data")
+		}
+
+		b.data = data.Get()
+		b.allocated = data
+	}
+
+	return nil
+}
+
 // Close closes the index.
 func (b *indexV2) Close() error {
-	if closer := b.closer; closer != nil {
-		return errors.Wrap(closer(), "error closing index file")
+	if b.allocated != nil {
+		return b.allocated.Close()
 	}
 
 	return nil
@@ -678,7 +703,7 @@ func (b *indexBuilderV2) writeIndexValueEntry(w io.Writer, it *Info) error {
 	return errors.Wrap(err, "error writing index value entry")
 }
 
-func openV2PackIndex(data []byte, closer func() error) (Index, error) {
+func openV2PackIndex(data []byte, allocator Allocator) (Index, error) {
 	header, err := safeSlice(data, 0, v2IndexHeaderSize)
 	if err != nil {
 		return nil, errors.Wrap(err, "invalid header")
@@ -732,10 +757,15 @@ func openV2PackIndex(data []byte, closer func() error) (Index, error) {
 		packIDs[i] = blob.ID(nameBuf)
 	}
 
+	// release data if the caller provides an allocator and hopes data to be reallocated
+	if allocator != nil {
+		data = nil
+	}
+
 	return &indexV2{
 		hdr:         hi,
 		data:        data,
-		closer:      closer,
+		allocator:   allocator,
 		formats:     parseFormatsBuffer(formatsBuf, int(hi.formatCount)),
 		packBlobIDs: packIDs,
 	}, nil

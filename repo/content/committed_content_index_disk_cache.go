@@ -29,6 +29,18 @@ type diskCommittedContentIndexCache struct {
 	minSweepAge          time.Duration
 }
 
+type memMapAllocator struct {
+	fullpath string
+	log      logging.Logger
+}
+
+type memMapBufferCloser struct {
+	fullpath string
+	handle   *os.File
+	mapped   mmap.MMap
+	log      logging.Logger
+}
+
 func (c *diskCommittedContentIndexCache) indexBlobPath(indexBlobID blob.ID) string {
 	return filepath.Join(c.dirname, string(indexBlobID)+simpleIndexSuffix)
 }
@@ -36,23 +48,36 @@ func (c *diskCommittedContentIndexCache) indexBlobPath(indexBlobID blob.ID) stri
 func (c *diskCommittedContentIndexCache) openIndex(ctx context.Context, indexBlobID blob.ID) (index.Index, error) {
 	fullpath := c.indexBlobPath(indexBlobID)
 
-	f, closeMmap, err := c.mmapOpenWithRetry(fullpath)
+	ndx, err := index.OpenWithAllocator(&memMapAllocator{
+		fullpath: fullpath,
+		log:      c.log,
+	}, c.v1PerContentOverhead)
 	if err != nil {
-		return nil, err
-	}
-
-	ndx, err := index.Open(f, closeMmap, c.v1PerContentOverhead)
-	if err != nil {
-		closeMmap() //nolint:errcheck
 		return nil, errors.Wrapf(err, "error opening index from %v", indexBlobID)
 	}
 
 	return ndx, nil
 }
 
+func (a *memMapAllocator) Allocate() (index.BufferCloser, error) {
+	a.log.Infof("-------mapping index file %s", a.fullpath)
+
+	mapped, f, err := a.mmapOpenWithRetry(a.fullpath)
+	if err != nil {
+		return nil, err
+	}
+
+	return &memMapBufferCloser{
+		fullpath: a.fullpath,
+		handle:   f,
+		mapped:   mapped,
+		log:      a.log,
+	}, nil
+}
+
 // mmapOpenWithRetry attempts mmap.Open() with exponential back-off to work around rare issue specific to Windows where
 // we can't open the file right after it has been written.
-func (c *diskCommittedContentIndexCache) mmapOpenWithRetry(path string) (mmap.MMap, func() error, error) {
+func (a *memMapAllocator) mmapOpenWithRetry(path string) (mmap.MMap, *os.File, error) {
 	const (
 		maxRetries    = 8
 		startingDelay = 10 * time.Millisecond
@@ -65,7 +90,7 @@ func (c *diskCommittedContentIndexCache) mmapOpenWithRetry(path string) (mmap.MM
 	retryCount := 0
 	for err != nil && retryCount < maxRetries {
 		retryCount++
-		c.log.Debugf("retry #%v unable to mmap.Open(): %v", retryCount, err)
+		a.log.Debugf("retry #%v unable to mmap.Open(): %v", retryCount, err)
 		time.Sleep(nextDelay)
 		nextDelay *= 2
 
@@ -83,17 +108,29 @@ func (c *diskCommittedContentIndexCache) mmapOpenWithRetry(path string) (mmap.MM
 		return nil, nil, errors.Wrap(err, "mmap error")
 	}
 
-	return mm, func() error {
-		if err2 := mm.Unmap(); err2 != nil {
-			return errors.Wrapf(err2, "error unmapping index %v", path)
-		}
+	return mm, f, nil
+}
 
-		if err2 := f.Close(); err2 != nil {
-			return errors.Wrapf(err2, "error closing index %v", path)
-		}
+func (b *memMapBufferCloser) Get() []byte {
+	return b.mapped
+}
 
-		return nil
-	}, nil
+func (b *memMapBufferCloser) Close() error {
+	b.log.Infof("-------unmapping index file %s", b.fullpath)
+
+	if b.mapped != nil {
+		if err := b.mapped.Unmap(); err != nil {
+			return errors.Wrapf(err, "error unmapping index %v", b.fullpath)
+		}
+	}
+
+	if b.handle != nil {
+		if err := b.handle.Close(); err != nil {
+			return errors.Wrapf(err, "error closing index %v", b.fullpath)
+		}
+	}
+
+	return nil
 }
 
 func (c *diskCommittedContentIndexCache) hasIndexBlobID(ctx context.Context, indexBlobID blob.ID) (bool, error) {

@@ -41,9 +41,10 @@ type FormatV1 struct {
 }
 
 type indexV1 struct {
-	hdr    v1HeaderInfo
-	data   []byte
-	closer func() error
+	hdr       v1HeaderInfo
+	data      []byte
+	allocator Allocator
+	allocated BufferCloser
 
 	// v1 index does not explicitly store per-content length so we compute it from packed length and fixed overhead
 	// provided by the encryptor.
@@ -109,6 +110,11 @@ func (b *indexV1) ApproximateCount() int {
 // The iteration ends when the callback returns an error, which is propagated to the caller or when
 // all contents have been visited.
 func (b *indexV1) Iterate(r IDRange, cb func(Info) error) error {
+	err := b.ensureAlloc()
+	if err != nil {
+		return err
+	}
+
 	startPos, err := b.findEntryPosition(r.StartID)
 	if err != nil {
 		return errors.Wrap(err, "could not find starting position")
@@ -226,6 +232,11 @@ func (b *indexV1) findEntry(output []byte, contentID ID) ([]byte, error) {
 
 // GetInfo returns information about a given content. If a content is not found, nil is returned.
 func (b *indexV1) GetInfo(contentID ID, result *Info) (bool, error) {
+	err := b.ensureAlloc()
+	if err != nil {
+		return false, err
+	}
+
 	var entryBuf [v1MaxEntrySize]byte
 
 	e, err := b.findEntry(entryBuf[:0], contentID)
@@ -248,10 +259,24 @@ func (b *indexV1) GetInfo(contentID ID, result *Info) (bool, error) {
 	return true, nil
 }
 
+func (b *indexV1) ensureAlloc() error {
+	if b.data == nil {
+		data, err := b.allocator.Allocate()
+		if err != nil {
+			return errors.Wrap(err, "error to alloc index data")
+		}
+
+		b.data = data.Get()
+		b.allocated = data
+	}
+
+	return nil
+}
+
 // Close closes the index.
 func (b *indexV1) Close() error {
-	if closer := b.closer; closer != nil {
-		return errors.Wrap(closer(), "error closing index file")
+	if b.allocated != nil {
+		return b.allocated.Close()
 	}
 
 	return nil
@@ -416,6 +441,18 @@ func v1ReadHeader(data []byte) (v1HeaderInfo, error) {
 	return hi, nil
 }
 
-func openV1PackIndex(hdr v1HeaderInfo, data []byte, closer func() error, overhead uint32) (Index, error) {
-	return &indexV1{hdr, data, closer, overhead, sync.Mutex{}, map[uint32]blob.ID{}}, nil
+func openV1PackIndex(hdr v1HeaderInfo, data []byte, allocator Allocator, overhead uint32) (Index, error) {
+	// release data if the caller provides an allocator and hopes data to be reallocated
+	if allocator != nil {
+		data = nil
+	}
+
+	return &indexV1{
+		hdr:                     hdr,
+		data:                    data,
+		allocator:               allocator,
+		v1PerContentOverhead:    overhead,
+		nameOffsetToBlobIDMutex: sync.Mutex{},
+		nameOffsetToBlobID:      map[uint32]blob.ID{},
+	}, nil
 }
