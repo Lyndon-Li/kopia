@@ -256,11 +256,11 @@ func (c *committedContentIndex) combineSmallIndexes(ctx context.Context, m index
 		return m, nil
 	}
 
-	b := index.Builder{}
+	tmpbld := index.NewOneUseBuilder()
 
 	for _, ndx := range toMerge {
 		if err := ndx.Iterate(index.AllIDs, func(i index.Info) error {
-			b.Add(i)
+			tmpbld.Add(i)
 			return nil
 		}); err != nil {
 			return nil, errors.Wrap(err, "unable to iterate index entries")
@@ -274,8 +274,8 @@ func (c *committedContentIndex) combineSmallIndexes(ctx context.Context, m index
 
 	var buf bytes.Buffer
 
-	if err := b.Build(&buf, mp.IndexVersion); err != nil {
-		return nil, errors.Wrap(err, "error building combined in-memory index")
+	if err := tmpbld.BuildStable(&buf, mp.IndexVersion); err != nil {
+		return nil, errors.Wrap(err, "unable to build index dataShards")
 	}
 
 	combined, err := index.Open(buf.Bytes(), nil, c.v1PerContentOverhead)

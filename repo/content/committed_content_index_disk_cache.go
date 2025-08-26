@@ -36,23 +36,26 @@ func (c *diskCommittedContentIndexCache) indexBlobPath(indexBlobID blob.ID) stri
 func (c *diskCommittedContentIndexCache) openIndex(_ context.Context, indexBlobID blob.ID) (index.Index, error) {
 	fullpath := c.indexBlobPath(indexBlobID)
 
-	f, closeMmap, err := c.mmapOpenWithRetry(fullpath)
+	f, closeFunc, err := c.mmapOrReadWithRetry(fullpath)
 	if err != nil {
 		return nil, err
 	}
 
-	ndx, err := index.Open(f, closeMmap, c.v1PerContentOverhead)
+	ndx, err := index.Open(f, closeFunc, c.v1PerContentOverhead)
 	if err != nil {
-		closeMmap() //nolint:errcheck
+		if closeFunc != nil {
+			closeFunc() //nolint:errcheck
+		}
+
 		return nil, errors.Wrapf(err, "error opening index from %v", indexBlobID)
 	}
 
 	return ndx, nil
 }
 
-// mmapOpenWithRetry attempts mmap.Open() with exponential back-off to work around rare issue specific to Windows where
+// mmapOrReadWithRetry attempts os.Open() with exponential back-off to work around rare issue specific to Windows where
 // we can't open the file right after it has been written.
-func (c *diskCommittedContentIndexCache) mmapOpenWithRetry(path string) (mmap.MMap, func() error, error) {
+func (c *diskCommittedContentIndexCache) mmapOrReadWithRetry(path string) ([]byte, func() error, error) {
 	const (
 		maxRetries    = 8
 		startingDelay = 10 * time.Millisecond
@@ -76,6 +79,16 @@ func (c *diskCommittedContentIndexCache) mmapOpenWithRetry(path string) (mmap.MM
 		return nil, nil, errors.Wrap(err, "unable to open file despite retries")
 	}
 
+	if mm, cc, err := mmapRead(f, path); err == nil {
+		return mm, cc, nil
+	}
+
+	c.log.Debugf("error mmaping index %v, fallback to regular open", path)
+
+	return regularRead(f, path)
+}
+
+func mmapRead(f *os.File, path string) (mmap.MMap, func() error, error) {
 	mm, err := mmap.Map(f, mmap.RDONLY, 0)
 	if err != nil {
 		f.Close() //nolint:errcheck
@@ -94,6 +107,20 @@ func (c *diskCommittedContentIndexCache) mmapOpenWithRetry(path string) (mmap.MM
 
 		return nil
 	}, nil
+}
+
+func regularRead(f *os.File, path string) ([]byte, func() error, error) {
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, nil, errors.Wrapf(err, "unable to get file info %v", path)
+	}
+
+	buffer := make([]byte, fi.Size())
+	if _, err := f.Read(buffer); err != nil {
+		return nil, nil, errors.Wrapf(err, "unable to read file %v", path)
+	}
+
+	return buffer, nil, nil
 }
 
 func (c *diskCommittedContentIndexCache) hasIndexBlobID(_ context.Context, indexBlobID blob.ID) (bool, error) {
