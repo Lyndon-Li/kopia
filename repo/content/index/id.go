@@ -84,7 +84,7 @@ func init() {
 	}
 }
 
-func (i ID) less(other ID) bool {
+func (i ID) Less(other ID) bool {
 	if i.prefix != other.prefix {
 		if other.prefix == 0 {
 			// value is g..z, other is a..f, so i > other

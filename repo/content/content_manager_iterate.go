@@ -68,7 +68,9 @@ func maybeParallelExecutor(parallel int, originalCallback IterateCallback) (Iter
 	// start N workers, each fetching from the shared channel and invoking the provided callback.
 	// cleanup() must be called to for worker completion
 	for range parallel {
-		wg.Go(func() {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
 			for i := range workch {
 				if err := originalCallback(i); err != nil {
 					select {
@@ -77,7 +79,7 @@ func maybeParallelExecutor(parallel int, originalCallback IterateCallback) (Iter
 					}
 				}
 			}
-		})
+		}()
 	}
 
 	return callback, cleanup
@@ -135,20 +137,29 @@ func (bm *WriteManager) IterateContents(ctx context.Context, opts IterateOptions
 		return callback(i)
 	}
 
-	if len(uncommitted) == 0 && opts.IncludeDeleted && opts.Range == index.AllIDs && opts.Parallel <= 1 {
-		// fast path, invoke callback directly
-		invokeCallback = callback
-	}
+	// Fast path: no uncommitted items
+	if len(uncommitted) == 0 {
+		if opts.IncludeDeleted && opts.Range == index.AllIDs && opts.Parallel <= 1 {
+			invokeCallback = callback
+		}
 
-	for _, bi := range uncommitted {
-		_ = invokeCallback(bi)
+		if err := bm.maybeRefreshIndexes(ctx); err != nil {
+			return err
+		}
+
+		if err := bm.committedContents.listContents(opts.Range, invokeCallback); err != nil {
+			return err
+		}
+
+		return cleanup()
 	}
 
 	if err := bm.maybeRefreshIndexes(ctx); err != nil {
 		return err
 	}
 
-	if err := bm.committedContents.listContents(opts.Range, invokeCallback); err != nil {
+	// Slow path: merge uncommitted (sorted) with committed (sorted)
+	if err := bm.mergeUncommittedAndCommitted(ctx, uncommitted, opts.Range, invokeCallback); err != nil {
 		return err
 	}
 
@@ -287,6 +298,76 @@ func (bm *WriteManager) IterateUnreferencedPacks(ctx context.Context, blobPrefix
 	}
 
 	contentlog.Log1(ctx, bm.log, "found pack blobs not in use", logparam.Int("unusedCount", int(unusedCount.Load())))
+
+	return nil
+}
+
+// mergeUncommittedAndCommitted performs a 2-way merge of sorted uncommitted and committed items.
+// This ensures that IterateContents returns globally sorted results even when uncommitted items exist.
+// The merge is done on-the-fly with O(N+M) time complexity and O(1) additional space.
+func (bm *WriteManager) mergeUncommittedAndCommitted(
+	ctx context.Context,
+	uncommitted index.Builder,
+	r IDRange,
+	callback func(Info) error,
+) error {
+	uncommittedSorted := uncommitted.Sorted() // []*Info, already sorted
+	uncommittedIdx := 0
+
+	// Get next uncommitted item within range
+	nextUncommitted := func() *index.Info {
+		for uncommittedIdx < len(uncommittedSorted) {
+			info := uncommittedSorted[uncommittedIdx]
+			uncommittedIdx++
+			if r.Contains(info.ContentID) {
+				return info
+			}
+		}
+		return nil
+	}
+
+	// Start with first uncommitted item
+	nextUncommittedItem := nextUncommitted()
+
+	// Iterate committed items and merge with uncommitted
+	err := bm.committedContents.listContents(r, func(committedItem Info) error {
+		// Emit all uncommitted items that come before current committed item
+		for nextUncommittedItem != nil {
+			if nextUncommittedItem.ContentID.Less(committedItem.ContentID) {
+				// Uncommitted item comes first - emit it
+				if err := callback(*nextUncommittedItem); err != nil {
+					return err
+				}
+				nextUncommittedItem = nextUncommitted()
+			} else if nextUncommittedItem.ContentID == committedItem.ContentID {
+				// Same ID - uncommitted overrides committed (newer version)
+				if err := callback(*nextUncommittedItem); err != nil {
+					return err
+				}
+				nextUncommittedItem = nextUncommitted()
+				// Skip committed item (overridden by uncommitted)
+				return nil
+			} else {
+				// Committed item comes first
+				break
+			}
+		}
+
+		// Emit committed item
+		return callback(committedItem)
+	})
+
+	if err != nil {
+		return err
+	}
+
+	// Emit any remaining uncommitted items (all larger than last committed)
+	for nextUncommittedItem != nil {
+		if err := callback(*nextUncommittedItem); err != nil {
+			return err
+		}
+		nextUncommittedItem = nextUncommitted()
+	}
 
 	return nil
 }
