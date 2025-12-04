@@ -22,6 +22,7 @@ type IterateOptions struct {
 	Range          IDRange
 	IncludeDeleted bool
 	Parallel       int
+	Sort           bool
 }
 
 // IterateCallback is the function type used as a callback during content iteration.
@@ -135,24 +136,83 @@ func (bm *WriteManager) IterateContents(ctx context.Context, opts IterateOptions
 		return callback(i)
 	}
 
-	if len(uncommitted) == 0 && opts.IncludeDeleted && opts.Range == index.AllIDs && opts.Parallel <= 1 {
+	if opts.IncludeDeleted && opts.Range == index.AllIDs && opts.Parallel <= 1 {
 		// fast path, invoke callback directly
 		invokeCallback = callback
-	}
-
-	for _, bi := range uncommitted {
-		_ = invokeCallback(bi)
 	}
 
 	if err := bm.maybeRefreshIndexes(ctx); err != nil {
 		return err
 	}
 
-	if err := bm.committedContents.listContents(opts.Range, invokeCallback); err != nil {
-		return err
+	if !opts.Sort {
+		for _, bi := range uncommitted {
+			_ = invokeCallback(bi)
+		}
+
+		if err := bm.committedContents.listContents(opts.Range, invokeCallback); err != nil {
+			return err
+		}
+	} else {
+		if err := bm.iterateContentsSorted(ctx, uncommitted, opts.Range, invokeCallback); err != nil {
+			return err
+		}
 	}
 
 	return cleanup()
+}
+
+func (bm *WriteManager) iterateContentsSorted(ctx context.Context, uncommitted index.Builder, r IDRange, callback func(Info) error) error {
+	sortedUnCommitted := uncommitted.Sorted()
+
+	uncommittedIdx := 0
+	funcNextUncommitted := func() *index.Info {
+		if uncommittedIdx >= len(sortedUnCommitted) {
+			return nil
+		}
+
+		info := sortedUnCommitted[uncommittedIdx]
+		uncommittedIdx++
+
+		return info
+	}
+
+	nextUncommitted := funcNextUncommitted()
+
+	if err := bm.committedContents.listContents(r, func(committed Info) error {
+		for nextUncommitted != nil {
+			if nextUncommitted.ContentID.Less(committed.ContentID) {
+				if err := callback(*nextUncommitted); err != nil {
+					return err
+				}
+
+				nextUncommitted = funcNextUncommitted()
+			} else if nextUncommitted.ContentID == committed.ContentID {
+				if err := callback(*nextUncommitted); err != nil {
+					return err
+				}
+
+				nextUncommitted = funcNextUncommitted()
+				return nil
+			} else {
+				break
+			}
+		}
+
+		return callback(committed)
+	}); err != nil {
+		return err
+	}
+
+	for nextUncommitted != nil {
+		if err := callback(*nextUncommitted); err != nil {
+			return err
+		}
+
+		nextUncommitted = funcNextUncommitted()
+	}
+
+	return nil
 }
 
 // IteratePackOptions are the options used to iterate over packs.

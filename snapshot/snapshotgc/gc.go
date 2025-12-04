@@ -3,6 +3,8 @@ package snapshotgc
 
 import (
 	"context"
+	"os"
+	"sync"
 	"time"
 
 	"github.com/pkg/errors"
@@ -12,6 +14,7 @@ import (
 	"github.com/kopia/kopia/internal/contentlog"
 	"github.com/kopia/kopia/internal/contentlog/logparam"
 	"github.com/kopia/kopia/internal/contentparam"
+	"github.com/kopia/kopia/internal/sortedchunk"
 	"github.com/kopia/kopia/internal/stats"
 	"github.com/kopia/kopia/internal/units"
 	"github.com/kopia/kopia/repo"
@@ -28,7 +31,14 @@ import (
 // User-visible log output.
 var userLog = logging.Module("snapshotgc")
 
-func findInUseContentIDs(ctx context.Context, log *contentlog.Logger, rep repo.Repository, used *bigmap.Set) error {
+const (
+	cacheSize     = 100 << 20
+	chunkSize     = 64 << 20
+	objectIDSize  = 75
+	contentIDSize = 70
+)
+
+func findInUseObjectIDs(ctx context.Context, log *contentlog.Logger, rep repo.Repository, writer sortedchunk.List) error {
 	ids, err := snapshot.ListSnapshotManifests(ctx, rep, nil, nil)
 	if err != nil {
 		return errors.Wrap(err, "unable to list snapshot manifest IDs")
@@ -41,15 +51,9 @@ func findInUseContentIDs(ctx context.Context, log *contentlog.Logger, rep repo.R
 
 	w, twerr := snapshotfs.NewTreeWalker(ctx, snapshotfs.TreeWalkerOptions{
 		EntryCallback: func(ctx context.Context, _ fs.Entry, oid object.ID, _ string) error {
-			contentIDs, verr := rep.VerifyObject(ctx, oid)
-			if verr != nil {
-				return errors.Wrapf(verr, "error verifying %v", oid)
-			}
-
-			var cidbuf [128]byte
-
-			for _, cid := range contentIDs {
-				used.Put(ctx, cid.Append(cidbuf[:0]))
+			var oidbuf [objectIDSize]byte
+			if err := writer.Append(oid.Append(oidbuf[:0])); err != nil {
+				return errors.Wrapf(err, "error storing objectID %v", oid)
 			}
 
 			return nil
@@ -61,7 +65,7 @@ func findInUseContentIDs(ctx context.Context, log *contentlog.Logger, rep repo.R
 
 	defer w.Close(ctx)
 
-	contentlog.Log(ctx, log, "Looking for active contents...")
+	contentlog.Log(ctx, log, "Looking for active objects...")
 
 	for _, m := range manifests {
 		root, err := snapshotfs.SnapshotRoot(rep, m)
@@ -71,6 +75,71 @@ func findInUseContentIDs(ctx context.Context, log *contentlog.Logger, rep repo.R
 
 		if err := w.Process(ctx, root, ""); err != nil {
 			return errors.Wrap(err, "error processing snapshot root")
+		}
+	}
+
+	return nil
+}
+
+func findInUseContentIDs(ctx context.Context, log *contentlog.Logger, rep repo.Repository, usedObjects sortedchunk.Iterator, writer sortedchunk.List, parallelism int) error {
+	objectChan := make(chan object.ID, parallelism*2)
+
+	type verifyResult struct {
+		contentIDs []content.ID
+		err        error
+	}
+	resultChan := make(chan verifyResult, parallelism*2)
+
+	var workerWG sync.WaitGroup
+	for i := 0; i < parallelism; i++ {
+		workerWG.Add(1)
+		go func() {
+			defer workerWG.Done()
+			for oid := range objectChan {
+				contentIDs, err := rep.VerifyObject(ctx, oid)
+				resultChan <- verifyResult{contentIDs: contentIDs, err: err}
+			}
+		}()
+	}
+
+	go func() {
+		workerWG.Wait()
+		close(resultChan)
+	}()
+
+	go func() {
+		defer close(objectChan)
+		for {
+			oidBytes, err := usedObjects.Next()
+			if oidBytes == nil {
+				break
+			}
+
+			oid, err := object.ParseID(string(oidBytes))
+			if err != nil {
+				continue
+			}
+
+			select {
+			case objectChan <- oid:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	contentlog.Log(ctx, log, "Looking for active contents...")
+
+	for result := range resultChan {
+		if result.err != nil {
+			return errors.Wrap(result.err, "error retrieving contentID")
+		}
+
+		for _, cid := range result.contentIDs {
+			var cidbuf [contentIDSize]byte
+			if err := writer.Append(cid.Append(cidbuf[:0])); err != nil {
+				return errors.Wrapf(err, "error storing contentID %v", cid)
+			}
 		}
 	}
 
@@ -92,13 +161,21 @@ func runInternal(ctx context.Context, rep repo.DirectRepositoryWriter, gcDelete 
 
 	log := rep.LogManager().NewLogger("maintenance-snapshot-gc")
 
-	used, serr := bigmap.NewSet(ctx)
-	if serr != nil {
-		return nil, errors.Wrap(serr, "unable to create new set")
-	}
-	defer used.Close(ctx)
+	usedObjects := sortedchunk.NewList(ctx, os.TempDir(), cacheSize, chunkSize, objectIDSize)
+	defer usedObjects.Close()
 
-	if err := findInUseContentIDs(ctx, log, rep, used); err != nil {
+	if err := usedObjects.Finalize(); err != nil {
+		return nil, errors.Wrap(err, "error finalizing object ID list")
+	}
+
+	if err := findInUseObjectIDs(ctx, log, rep, usedObjects); err != nil {
+		return nil, errors.Wrap(err, "unable to find in-use object ID")
+	}
+
+	usedContents := sortedchunk.NewList(ctx, os.TempDir(), cacheSize, chunkSize, contentIDSize)
+	defer usedContents.Close()
+
+	if err := findInUseContentIDs(ctx, log, rep, usedObjects.GetIterator(), usedContents); err != nil {
 		return nil, errors.Wrap(err, "unable to find in-use content ID")
 	}
 

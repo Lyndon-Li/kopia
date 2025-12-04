@@ -222,3 +222,7 @@ func (b Builder) BuildShards(indexVersion int, stable bool, shardSize int) ([]ga
 
 	return dataShards, closeShards, nil
 }
+
+func (b Builder) Sorted() []*Info {
+	return b.sortedContents()
+}

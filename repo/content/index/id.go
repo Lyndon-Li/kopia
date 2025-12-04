@@ -97,6 +97,10 @@ func (i ID) less(other ID) bool {
 	return bytes.Compare(i.data[:i.idLen], other.data[:other.idLen]) < 0
 }
 
+func (i ID) Less(other ID) bool {
+	return i.less(other)
+}
+
 // AppendToJSON appends content ID to JSON buffer.
 func (i ID) AppendToJSON(buf []byte, maxLength uint8) []byte {
 	buf = append(buf, '"')

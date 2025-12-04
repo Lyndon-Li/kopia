@@ -96,6 +96,10 @@ func (w *TreeWalker) TooManyErrors() bool {
 }
 
 func (w *TreeWalker) alreadyProcessed(ctx context.Context, e fs.Entry) bool {
+	if w.enqueued == nil {
+		return false
+	}
+
 	var idbuf [128]byte
 
 	return !w.enqueued.Put(ctx, oidOf(e).Append(idbuf[:0]))
@@ -183,6 +187,8 @@ type TreeWalkerOptions struct {
 
 	Parallelism int
 	MaxErrors   int
+
+	deduplicate bool
 }
 
 // NewTreeWalker creates new tree walker.
@@ -195,14 +201,18 @@ func NewTreeWalker(ctx context.Context, options TreeWalkerOptions) (*TreeWalker,
 		options.MaxErrors = 1
 	}
 
-	s, err := bigmap.NewSet(ctx)
-	if err != nil {
-		return nil, errors.Wrap(err, "NewSet")
+	var enqueued *bigmap.Set
+	if options.deduplicate {
+		if s, err := bigmap.NewSet(ctx); err != nil {
+			return nil, errors.Wrap(err, "NewSet")
+		} else {
+			enqueued = s
+		}
 	}
 
 	return &TreeWalker{
 		options:  options,
 		wp:       workshare.NewPool[any](options.Parallelism - 1),
-		enqueued: s,
+		enqueued: enqueued,
 	}, nil
 }
