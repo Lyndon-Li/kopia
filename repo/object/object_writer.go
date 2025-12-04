@@ -23,6 +23,7 @@ const indirectContentPrefix = "x"
 // of written data.
 type Writer interface {
 	io.WriteCloser
+	io.WriterAt
 
 	// Checkpoint returns ID of an object consisting of all contents written to storage so far.
 	// This may not include some data buffered in the writer.
@@ -93,6 +94,9 @@ type objectWriter struct {
 
 	contentWriteErrorMutex sync.Mutex
 	contentWriteError      error // stores async write error, propagated in Result()
+
+	parentEntries           []IndirectObjectEntry
+	currentParentEntryIndex int
 }
 
 func (w *objectWriter) Close() error {
@@ -113,7 +117,10 @@ func (w *objectWriter) Close() error {
 func (w *objectWriter) Write(data []byte) (n int, err error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	return w.writeLocked(data)
+}
 
+func (w *objectWriter) writeLocked(data []byte) (n int, err error) {
 	dataLen := len(data)
 	w.totalLength += int64(dataLen)
 
@@ -138,6 +145,110 @@ func (w *objectWriter) Write(data []byte) (n int, err error) {
 	return dataLen, nil
 }
 
+func (w *objectWriter) WriteAt(data []byte, offset int64) (n int, err error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	tailLength := w.buffer.Length()
+
+	if w.currentPosition+int64(tailLength) > offset {
+		return 0, errors.Errorf("cannot write backwards, current %v, tail %v, request %v", w.currentPosition, tailLength, offset)
+	}
+
+	if w.currentPosition+int64(tailLength) < offset {
+		if tailLength > 0 {
+			if err := w.flushBufferLocked(); err != nil {
+				return 0, errors.Wrapf(err, "error to flush tail, length %v", tailLength)
+			}
+		}
+
+		entries, err := w.getEntriesToClone(offset)
+		if err != nil {
+			return 0, errors.Errorf("error to get parent entries for offset %v", offset)
+		}
+
+		if len(entries) == 0 {
+			return 0, errors.Errorf("no entries to clone from %v to %v", w.currentPosition, offset)
+		}
+
+		if w.currentPosition < entries[0].Start {
+			return 0, errors.Errorf("unexpected skip of data, expect offset %v, actual offset %v", w.currentPosition, entries[0].Start)
+		}
+
+		if w.currentPosition > entries[0].Start {
+			entries[0].Offset += (w.currentPosition - entries[0].Start)
+			entries[0].Length -= (w.currentPosition - entries[0].Start)
+			entries[0].Start = w.currentPosition
+		}
+
+		entries[len(entries)-1].Length = offset - entries[len(entries)-1].Start
+
+		w.writeEntriesLocked(entries)
+
+		if w.currentPosition != offset {
+			return -1, errors.Errorf("unexpected position %v vs. %v", w.currentPosition, offset)
+		}
+	}
+
+	if data != nil {
+		return w.writeLocked(data)
+	}
+
+	return 0, nil
+}
+
+func (w *objectWriter) getEntriesToClone(off int64) ([]IndirectObjectEntry, error) {
+	entries := []IndirectObjectEntry{}
+	lastOffset := w.currentPosition
+
+	if w.parentEntries != nil && w.currentParentEntryIndex < len(w.parentEntries) {
+		if w.parentEntries[w.currentParentEntryIndex].Start >= off {
+			return nil, errors.Errorf("current entry starting offset %v is ahead of requested offset %v, entry index %v", w.currentParentEntryIndex, w.parentEntries[w.currentParentEntryIndex].Start, off)
+		}
+
+		for w.currentParentEntryIndex < len(w.parentEntries) {
+			lastOffset = w.parentEntries[w.currentParentEntryIndex].endOffset()
+
+			if lastOffset > w.currentPosition {
+				entries = append(entries, w.parentEntries[w.currentParentEntryIndex])
+			}
+
+			if lastOffset >= off {
+				break
+			}
+
+			w.currentParentEntryIndex++
+		}
+	}
+
+	if lastOffset < off {
+		entries = append(entries, IndirectObjectEntry{
+			Start:    lastOffset,
+			Length:   off - lastOffset,
+			RealSize: 0,
+			Zero:     true,
+		})
+	}
+
+	return entries, nil
+}
+
+func (w *objectWriter) writeEntriesLocked(entries []IndirectObjectEntry) {
+	w.indirectIndexGrowMutex.Lock()
+	for _, entry := range entries {
+		chunkID := len(w.indirectIndex)
+		w.indirectIndex = append(w.indirectIndex, IndirectObjectEntry{})
+		w.indirectIndex[chunkID].Start = entry.Start
+		w.indirectIndex[chunkID].Length = entry.Length
+		w.indirectIndex[chunkID].Object = entry.Object
+		w.indirectIndex[chunkID].Offset = entry.Offset
+		w.indirectIndex[chunkID].RealSize = entry.RealSize
+		w.indirectIndex[chunkID].Zero = entry.Zero
+		w.currentPosition += entry.Length
+	}
+	w.indirectIndexGrowMutex.Unlock()
+}
+
 // +checklocks:w.mu
 func (w *objectWriter) flushBufferLocked() error {
 	length := w.buffer.Length()
@@ -148,6 +259,9 @@ func (w *objectWriter) flushBufferLocked() error {
 	w.indirectIndex = append(w.indirectIndex, IndirectObjectEntry{})
 	w.indirectIndex[chunkID].Start = w.currentPosition
 	w.indirectIndex[chunkID].Length = int64(length)
+	w.indirectIndex[chunkID].Offset = 0
+	w.indirectIndex[chunkID].RealSize = int64(length)
+	w.indirectIndex[chunkID].Zero = false
 	w.currentPosition += int64(length)
 	w.indirectIndexGrowMutex.Unlock()
 
@@ -352,4 +466,5 @@ type WriterOptions struct {
 	MetadataCompressor compression.Name
 	Splitter           string // use particular splitter instead of default
 	AsyncWrites        int    // allow up to N content writes to be asynchronous
+	ParentObject       *ID
 }

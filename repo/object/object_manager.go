@@ -88,6 +88,15 @@ func (om *Manager) NewWriter(ctx context.Context, opt WriterOptions) Writer {
 	w.buffer.Reset()
 	w.contentWriteError = nil
 
+	if opt.ParentObject != nil {
+		entries, err := getIndirectObjectEntries(ctx, om.contentMgr, *opt.ParentObject)
+		if err != nil {
+			log(ctx).Errorf("Failed to get parent object entries, parent object %v", *opt.ParentObject)
+		} else {
+			w.parentEntries = entries
+		}
+	}
+
 	return w
 }
 
@@ -172,9 +181,12 @@ func appendIndexEntriesForObject(ctx context.Context, cr contentReader, indexEnt
 	defer r.Close() //nolint:errcheck
 
 	indexEntries, totalLength = appendIndexEntries(indexEntries, startingLength, IndirectObjectEntry{
-		Start:  0,
-		Length: r.Length(),
-		Object: objectID,
+		Start:    0,
+		Length:   r.Length(),
+		Object:   objectID,
+		Offset:   0,
+		RealSize: r.Length(),
+		Zero:     false,
 	})
 
 	return indexEntries, totalLength, nil
@@ -185,9 +197,12 @@ func appendIndexEntries(indexEntries []IndirectObjectEntry, startingLength int64
 
 	for _, inc := range incoming {
 		indexEntries = append(indexEntries, IndirectObjectEntry{
-			Start:  inc.Start + startingLength,
-			Length: inc.Length,
-			Object: inc.Object,
+			Start:    inc.Start + startingLength,
+			Length:   inc.Length,
+			Object:   inc.Object,
+			Offset:   inc.Offset,
+			RealSize: inc.RealSize,
+			Zero:     inc.Zero,
 		})
 
 		totalLength += inc.Length
