@@ -108,28 +108,37 @@ func (r *objectReader) openCurrentChunk() error {
 
 	b := make([]byte, st.Length)
 	if !st.Zero {
-		rd, err := openAndAssertLength(r.ctx, r.cr, st.Object, st.RealSize)
+		contentLength := st.RealSize
+		if contentLength == 0 {
+			contentLength = st.Length
+		}
+
+		if st.Offset+st.Length > contentLength {
+			return errors.Errorf("invalid object entry, offset %v, length %v, realSize %v", st.Offset, st.Length, st.RealSize)
+		}
+
+		rd, err := openAndAssertLength(r.ctx, r.cr, st.Object, contentLength)
 		if err != nil {
 			return err
 		}
 		defer rd.Close() //nolint:errcheck
 
 		if st.Offset != 0 {
-			if _, err := rd.Seek(st.Offset, io.SeekStart); err != nil {
+			if pos, err := rd.Seek(st.Offset, io.SeekStart); err != nil {
 				return errors.Wrapf(err, "error seeking chunk to %v", st.Offset)
+			} else if pos != st.Offset {
+				return errors.Errorf("error seeking object reader to expected pos %v(%v)", st.Offset, pos)
 			}
 		}
 
-		if _, err := rd.Read(b); err != nil {
+		if read, err := rd.Read(b); err != nil {
 			return errors.Wrap(err, "error reading chunk")
+		} else if read != len(b) {
+			return errors.Errorf("error reading expected length of data %v(%v)", len(b), read)
 		}
 	} else {
 		if st.Object != EmptyID {
 			return errors.New("all zero chunk's ID is not empty")
-		}
-
-		if st.Offset >= st.RealSize {
-			return errors.Errorf("all zero chunk overflow, pos %v, size %v", st.Offset, st.RealSize)
 		}
 	}
 
@@ -352,7 +361,7 @@ func newObjectReaderWithData(data []byte) Reader {
 	}
 }
 
-func getIndirectObjectEntries(ctx context.Context, cr contentReader, objectID ID) ([]IndirectObjectEntry, error) {
+func getFlattenedEntries(ctx context.Context, cr contentReader, objectID ID) ([]IndirectObjectEntry, error) {
 	if indexObjectID, ok := objectID.IndexObjectID(); ok {
 		seekTable, err := LoadIndexObject(ctx, cr, indexObjectID)
 		if err != nil {
@@ -362,5 +371,17 @@ func getIndirectObjectEntries(ctx context.Context, cr contentReader, objectID ID
 		return seekTable, nil
 	}
 
-	return nil, errors.New("invalid indirect object")
+	reader, err := newRawReader(ctx, cr, objectID, -1)
+	if err != nil {
+		return nil, errors.Wrapf(err, "error reading object %v", objectID)
+	}
+
+	return []IndirectObjectEntry{{
+		Start:    0,
+		Length:   reader.Length(),
+		Object:   objectID,
+		Offset:   0,
+		RealSize: reader.Length(),
+		Zero:     false,
+	}}, nil
 }

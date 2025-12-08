@@ -2,12 +2,18 @@ package object
 
 // IndirectObjectEntry represents an entry in indirect object stream.
 type IndirectObjectEntry struct {
-	Start    int64 `json:"s,omitempty"`
-	Length   int64 `json:"l,omitempty"`
-	Object   ID    `json:"o"`
-	Offset   int64 `json:"f,omitempty"` // the offset to the content
-	RealSize int64 `json:"r,omitempty"` // the content size
-	Zero     bool  `json:"z,omitempty"`
+	Start  int64 `json:"s,omitempty"`
+	Length int64 `json:"l,omitempty"`
+	Object ID    `json:"o"`
+
+	// Zero means the current chunk data is all-zero, so no content is assigned
+	Zero bool `json:"z,omitempty"`
+
+	// Offset is the offset of the start in the content
+	Offset int64 `json:"f,omitempty"`
+
+	// RealSize records the full content size for verification purpose
+	RealSize int64 `json:"r,omitempty"`
 }
 
 func (i *IndirectObjectEntry) endOffset() int64 {

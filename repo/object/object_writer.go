@@ -96,6 +96,7 @@ type objectWriter struct {
 	contentWriteError      error // stores async write error, propagated in Result()
 
 	parentEntries           []IndirectObjectEntry
+	parentEntryError        error
 	currentParentEntryIndex int
 }
 
@@ -149,6 +150,10 @@ func (w *objectWriter) WriteAt(data []byte, offset int64) (n int, err error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
+	if w.parentEntryError != nil {
+		return 0, errors.Wrap(err, "error getting parent entries")
+	}
+
 	tailLength := w.buffer.Length()
 
 	if w.currentPosition+int64(tailLength) > offset {
@@ -164,7 +169,7 @@ func (w *objectWriter) WriteAt(data []byte, offset int64) (n int, err error) {
 
 		entries, err := w.getEntriesToClone(offset)
 		if err != nil {
-			return 0, errors.Errorf("error to get parent entries for offset %v", offset)
+			return 0, errors.Errorf("error to get parent entries from %v to %v", w.currentPosition, offset)
 		}
 
 		if len(entries) == 0 {

@@ -89,9 +89,10 @@ func (om *Manager) NewWriter(ctx context.Context, opt WriterOptions) Writer {
 	w.contentWriteError = nil
 
 	if opt.ParentObject != nil {
-		entries, err := getIndirectObjectEntries(ctx, om.contentMgr, *opt.ParentObject)
+		entries, err := getFlattenedEntries(ctx, om.contentMgr, *opt.ParentObject)
 		if err != nil {
 			log(ctx).Errorf("Failed to get parent object entries, parent object %v", *opt.ParentObject)
+			w.parentEntryError = err
 		} else {
 			w.parentEntries = entries
 		}
