@@ -100,6 +100,10 @@ func (f *fakeContentManager) Flush(ctx context.Context) error {
 }
 
 func setupTest(t *testing.T, compressionHeaderID map[content.ID]compression.HeaderID) (map[content.ID][]byte, *fakeContentManager, *Manager) {
+	return setupTestWithSplitter(t, compressionHeaderID, "FIXED-1M")
+}
+
+func setupTestWithSplitter(t *testing.T, compressionHeaderID map[content.ID]compression.HeaderID, splitter string) (map[content.ID][]byte, *fakeContentManager, *Manager) {
 	t.Helper()
 
 	data := map[content.ID][]byte{}
@@ -1041,4 +1045,228 @@ func TestWriterFailure_OnCompression(t *testing.T) {
 
 	_, err := w.Write(bytes.Repeat([]byte{1, 2, 3, 4}, 1e6))
 	require.ErrorIs(t, err, errSomeError)
+}
+
+func TestGetFlattenedEntries(t *testing.T) {
+	_, _, om := setupTest(t, nil)
+
+	ctx := testlogging.Context(t)
+
+	w1 := om.NewWriter(ctx, WriterOptions{})
+	w1.Write(make([]byte, 2*1024*1024))
+	id1, err := w1.Result()
+	require.NoError(t, err)
+
+	w2 := om.NewWriter(ctx, WriterOptions{})
+	w2.Write(make([]byte, 3*1024*1024))
+	id2, err := w2.Result()
+	require.NoError(t, err)
+
+	concatID, err := om.Concatenate(ctx, []ID{id1, id2}, "zstd-fastest")
+	require.NoError(t, err)
+
+	entries, err := getFlattenedEntries(ctx, om.contentMgr, concatID)
+	require.NoError(t, err)
+
+	require.Equal(t, 5, len(entries))
+
+	require.Equal(t, int64(1024*1024), entries[0].Length)
+	require.Equal(t, int64(1024*1024), entries[1].Length)
+	require.Equal(t, int64(1024*1024), entries[2].Length)
+	require.Equal(t, int64(1024*1024), entries[3].Length)
+	require.Equal(t, int64(1024*1024), entries[4].Length)
+}
+
+func TestIncrementalObject1(t *testing.T) {
+	_, _, om := setupTest(t, nil)
+
+	ctx := testlogging.Context(t)
+
+	parentSize := 1024 * 1024
+	parentData := make([]byte, parentSize)
+	for i := range parentData {
+		parentData[i] = byte(i % 256)
+	}
+
+	w1 := om.NewWriter(ctx, WriterOptions{})
+	_, err := w1.Write(parentData)
+	require.NoError(t, err)
+	parentID, err := w1.Result()
+	require.NoError(t, err)
+
+	// reuse the first 500KB of the parent
+	w2 := om.NewWriter(ctx, WriterOptions{
+		ParentObject: &parentID,
+	})
+
+	newData := []byte("NEW-DATA")
+	reuseSize := 500 * 1024
+
+	_, err = w2.WriteAt(newData, int64(reuseSize))
+	require.NoError(t, err)
+
+	childID, err := w2.Result()
+	require.NoError(t, err)
+
+	r, err := Open(ctx, om.contentMgr, childID)
+	require.NoError(t, err)
+	defer r.Close()
+
+	require.Equal(t, int64(reuseSize+len(newData)), r.Length())
+
+	reusedData := make([]byte, reuseSize)
+	_, err = io.ReadFull(r, reusedData)
+	require.NoError(t, err)
+	require.True(t, bytes.Equal(parentData[:reuseSize], reusedData))
+
+	newReadData := make([]byte, len(newData))
+	_, err = io.ReadFull(r, newReadData)
+	require.NoError(t, err)
+	require.True(t, bytes.Equal(newData, newReadData))
+}
+
+func TestIncrementalObject2(t *testing.T) {
+	_, _, om := setupTestWithSplitter(t, nil, "FIXED-100K")
+
+	ctx := testlogging.Context(t)
+
+	parentSize := 300 * 1024
+	parentData := make([]byte, parentSize)
+	for i := range parentData {
+		parentData[i] = byte(i % 256)
+	}
+
+	w1 := om.NewWriter(ctx, WriterOptions{})
+	w1.Write(parentData)
+	parentID, err := w1.Result()
+	require.NoError(t, err)
+
+	w2 := om.NewWriter(ctx, WriterOptions{
+		ParentObject: &parentID,
+	})
+
+	zeros := make([]byte, 50*1024)
+	w2.Write(zeros)
+
+	// jump to 150KB, reusing Parent[50KB..150KB].
+	newData := []byte("NEW-DATA")
+	w2.WriteAt(newData, 150*1024)
+
+	childID, err := w2.Result()
+	require.NoError(t, err)
+
+	r, err := Open(ctx, om.contentMgr, childID)
+	require.NoError(t, err)
+	defer r.Close()
+
+	r.Seek(50*1024, io.SeekStart)
+	readBuf := make([]byte, 100*1024)
+	_, err = io.ReadFull(r, readBuf)
+	require.NoError(t, err)
+
+	expected := parentData[50*1024 : 150*1024]
+	require.True(t, bytes.Equal(expected, readBuf))
+}
+
+func TestIncrementalObject3(t *testing.T) {
+	_, _, om := setupTestWithSplitter(t, nil, "FIXED-100K")
+
+	ctx := testlogging.Context(t)
+
+	parentSize := 300 * 1024
+	parentData := make([]byte, parentSize)
+	for i := range parentData {
+		parentData[i] = byte(i % 255)
+	}
+	w1 := om.NewWriter(ctx, WriterOptions{})
+	w1.Write(parentData)
+	parentID, err := w1.Result()
+	require.NoError(t, err)
+
+	w2 := om.NewWriter(ctx, WriterOptions{ParentObject: &parentID})
+	w2.Write(make([]byte, 10))
+	_, err = w2.WriteAt([]byte("fail"), 5)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "cannot write backwards")
+}
+
+func TestIncrementalObject4(t *testing.T) {
+	_, _, om := setupTestWithSplitter(t, nil, "FIXED-100K")
+
+	ctx := testlogging.Context(t)
+
+	parentSize := 300 * 1024
+	parentData := make([]byte, parentSize)
+	for i := range parentData {
+		parentData[i] = byte(i % 255)
+	}
+	w1 := om.NewWriter(ctx, WriterOptions{})
+	w1.Write(parentData)
+	parentID, err := w1.Result()
+	require.NoError(t, err)
+
+	// multi-Chunk Span, reuse Parent[50KB ... 250KB].
+	w2 := om.NewWriter(ctx, WriterOptions{ParentObject: &parentID})
+
+	w2.Write(make([]byte, 50*1024))
+
+	newData := []byte("NEW-DATA")
+	_, err = w2.WriteAt(newData, 250*1024)
+	require.NoError(t, err)
+
+	childID, err := w2.Result()
+	require.NoError(t, err)
+
+	r, err := Open(ctx, om.contentMgr, childID)
+	require.NoError(t, err)
+	defer r.Close()
+
+	r.Seek(50*1024, io.SeekStart)
+	buf := make([]byte, 200*1024)
+	_, err = io.ReadFull(r, buf)
+	require.NoError(t, err)
+
+	expected := parentData[50*1024 : 250*1024]
+	require.True(t, bytes.Equal(expected, buf))
+}
+
+func TestIncrementalObject5(t *testing.T) {
+	_, _, om := setupTestWithSplitter(t, nil, "FIXED-100K")
+
+	ctx := testlogging.Context(t)
+
+	parentSize := 300 * 1024
+	parentData := make([]byte, parentSize)
+	for i := range parentData {
+		parentData[i] = byte(i % 255)
+	}
+	w1 := om.NewWriter(ctx, WriterOptions{})
+	w1.Write(parentData)
+	parentID, err := w1.Result()
+	require.NoError(t, err)
+
+	// parent ends at 300KB, write at 400KB.
+	w2 := om.NewWriter(ctx, WriterOptions{ParentObject: &parentID})
+
+	w2.WriteAt([]byte{}, 300*1024)
+
+	_, err = w2.WriteAt([]byte("END"), 400*1024)
+	require.NoError(t, err)
+
+	childID, err := w2.Result()
+	require.NoError(t, err)
+
+	r, err := Open(ctx, om.contentMgr, childID)
+	require.NoError(t, err)
+	defer r.Close()
+
+	require.Equal(t, int64(400*1024+3), r.Length())
+
+	r.Seek(300*1024, io.SeekStart)
+	gapBuf := make([]byte, 100*1024)
+	_, err = io.ReadFull(r, gapBuf)
+	require.NoError(t, err)
+
+	allZeros := make([]byte, 100*1024)
+	require.True(t, bytes.Equal(allZeros, gapBuf))
 }
