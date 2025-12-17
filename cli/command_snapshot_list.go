@@ -425,7 +425,7 @@ func (c *commandSnapshotList) entryBits(ctx context.Context, m *snapshot.Manifes
 	}
 
 	if c.snapshotListShowDelta {
-		bits = append(bits, deltaBytes(ent.Size()-lastTotalFileSize))
+		bits = append(bits, fmt.Sprintf("incremental:%v", deltaBytes(ent.Size()-lastTotalFileSize)))
 	}
 
 	if summary != nil {
