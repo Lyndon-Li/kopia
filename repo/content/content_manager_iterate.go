@@ -22,6 +22,7 @@ type IterateOptions struct {
 	Range          IDRange
 	IncludeDeleted bool
 	Parallel       int
+	Sort           bool
 }
 
 // IterateCallback is the function type used as a callback during content iteration.
@@ -104,6 +105,8 @@ func (bm *WriteManager) snapshotUncommittedItems(ctx context.Context) index.Buil
 	return overlay
 }
 
+var ErrSortIterationBroken = errors.New("sort interation is not possible")
+
 // IterateContents invokes the provided callback for each content starting with a specified prefix
 // and possibly including deleted items.
 func (bm *WriteManager) IterateContents(ctx context.Context, opts IterateOptions, callback IterateCallback) error {
@@ -116,6 +119,9 @@ func (bm *WriteManager) IterateContents(ctx context.Context, opts IterateOptions
 	defer cleanup() //nolint:errcheck
 
 	uncommitted := bm.snapshotUncommittedItems(ctx)
+	if opts.Sort && len(uncommitted) > 0 {
+		return ErrSortIterationBroken
+	}
 
 	invokeCallback := func(i Info) error {
 		if !opts.IncludeDeleted {

@@ -8,7 +8,6 @@ import (
 	"github.com/pkg/errors"
 
 	"github.com/kopia/kopia/fs"
-	"github.com/kopia/kopia/internal/bigmap"
 	"github.com/kopia/kopia/internal/contentlog"
 	"github.com/kopia/kopia/internal/contentlog/logparam"
 	"github.com/kopia/kopia/internal/contentparam"
@@ -28,7 +27,7 @@ import (
 // User-visible log output.
 var userLog = logging.Module("snapshotgc")
 
-func findInUseContentIDs(ctx context.Context, log *contentlog.Logger, rep repo.Repository, used *bigmap.Set) error {
+func findInUseContentIDs(ctx context.Context, log *contentlog.Logger, rep repo.Repository, used *SortedSet) error {
 	ids, err := snapshot.ListSnapshotManifests(ctx, rep, nil, nil)
 	if err != nil {
 		return errors.Wrap(err, "unable to list snapshot manifest IDs")
@@ -49,7 +48,9 @@ func findInUseContentIDs(ctx context.Context, log *contentlog.Logger, rep repo.R
 			var cidbuf [128]byte
 
 			for _, cid := range contentIDs {
-				used.Put(ctx, cid.Append(cidbuf[:0]))
+				if err := used.Put(ctx, cid.Append(cidbuf[:0])); err != nil {
+					return errors.Wrap(err, "error adding content ID to used set")
+				}
 			}
 
 			return nil
@@ -92,14 +93,22 @@ func runInternal(ctx context.Context, rep repo.DirectRepositoryWriter, gcDelete 
 
 	log := rep.LogManager().NewLogger("maintenance-snapshot-gc")
 
-	used, serr := bigmap.NewSet(ctx)
-	if serr != nil {
-		return nil, errors.Wrap(serr, "unable to create new set")
-	}
+	used := NewSortedSet(64 << 20) // 64MB
 	defer used.Close(ctx)
 
 	if err := findInUseContentIDs(ctx, log, rep, used); err != nil {
 		return nil, errors.Wrap(err, "unable to find in-use content ID")
+	}
+
+	if err := used.Finish(ctx); err != nil {
+		return nil, errors.Wrap(err, "unable to finish used set")
+	}
+
+	// Flush to ensure all contents are in the index and will be iterated in sorted order.
+	// This is required because IterateContents iterates uncommitted items first, which
+	// would break the sorted assumption of used.Contains().
+	if err := rep.Flush(ctx); err != nil {
+		return nil, errors.Wrap(err, "flush error")
 	}
 
 	return findUnreferencedAndRepairRereferenced(ctx, log, rep, gcDelete, safety, maintenanceStartTime, used)
@@ -112,78 +121,90 @@ func findUnreferencedAndRepairRereferenced(
 	gcDelete bool,
 	safety maintenance.SafetyParameters,
 	maintenanceStartTime time.Time,
-	used *bigmap.Set,
+	used *SortedSet,
 ) (*maintenancestats.SnapshotGCStats, error) {
 	var unused, inUse, system, tooRecent, undeleted, deleted stats.CountSum
 
 	contentlog.Log(ctx, log, "Looking for unreferenced contents...")
 
+	var err error
+
 	// Ensure that the iteration includes deleted contents, so those can be
 	// undeleted (recovered).
-	err := rep.ContentReader().IterateContents(ctx, content.IterateOptions{IncludeDeleted: true}, func(ci content.Info) error {
-		if manifest.ContentPrefix == ci.ContentID.Prefix() {
-			system.Add(int64(ci.PackedLength))
-			return nil
-		}
-
-		var cidbuf [128]byte
-
-		if used.Contains(ci.ContentID.Append(cidbuf[:0])) {
-			if ci.Deleted {
-				if err := rep.ContentManager().UndeleteContent(ctx, ci.ContentID); err != nil {
-					return errors.Wrapf(err, "Could not undelete referenced content: %v", ci)
-				}
-
-				undeleted.Add(int64(ci.PackedLength))
+	for {
+		err = rep.ContentReader().IterateContents(ctx, content.IterateOptions{IncludeDeleted: true}, func(ci content.Info) error {
+			if manifest.ContentPrefix == ci.ContentID.Prefix() {
+				system.Add(int64(ci.PackedLength))
+				return nil
 			}
 
-			inUse.Add(int64(ci.PackedLength))
+			var cidbuf [128]byte
 
-			return nil
-		}
+			if used.Contains(ci.ContentID.Append(cidbuf[:0])) {
+				if ci.Deleted {
+					if err := rep.ContentManager().UndeleteContent(ctx, ci.ContentID); err != nil {
+						return errors.Wrapf(err, "Could not undelete referenced content: %v", ci)
+					}
 
-		if maintenanceStartTime.Sub(ci.Timestamp()) < safety.MinContentAgeSubjectToGC {
+					undeleted.Add(int64(ci.PackedLength))
+				}
+
+				inUse.Add(int64(ci.PackedLength))
+
+				return nil
+			}
+
+			if maintenanceStartTime.Sub(ci.Timestamp()) < safety.MinContentAgeSubjectToGC {
+				contentlog.Log3(ctx, log,
+					"recent unreferenced content",
+					contentparam.ContentID("contentID", ci.ContentID),
+					logparam.Int64("bytes", int64(ci.PackedLength)),
+					logparam.Time("modified", ci.Timestamp()))
+				tooRecent.Add(int64(ci.PackedLength))
+
+				return nil
+			}
+
 			contentlog.Log3(ctx, log,
-				"recent unreferenced content",
+				"unreferenced content",
 				contentparam.ContentID("contentID", ci.ContentID),
 				logparam.Int64("bytes", int64(ci.PackedLength)),
 				logparam.Time("modified", ci.Timestamp()))
-			tooRecent.Add(int64(ci.PackedLength))
 
-			return nil
-		}
-
-		contentlog.Log3(ctx, log,
-			"unreferenced content",
-			contentparam.ContentID("contentID", ci.ContentID),
-			logparam.Int64("bytes", int64(ci.PackedLength)),
-			logparam.Time("modified", ci.Timestamp()))
-
-		cnt, totalSize := unused.Add(int64(ci.PackedLength))
-
-		if gcDelete {
-			if err := rep.ContentManager().DeleteContent(ctx, ci.ContentID); err != nil {
-				return errors.Wrap(err, "error deleting content")
-			}
-
-			deleted.Add(int64(ci.PackedLength))
-		}
-
-		if cnt%100000 == 0 {
-			contentlog.Log2(ctx, log,
-				"found unused contents so far",
-				logparam.UInt32("count", cnt),
-				logparam.Int64("bytes", totalSize))
+			cnt, totalSize := unused.Add(int64(ci.PackedLength))
 
 			if gcDelete {
-				if err := rep.Flush(ctx); err != nil {
-					return errors.Wrap(err, "flush error")
+				if err := rep.ContentManager().DeleteContent(ctx, ci.ContentID); err != nil {
+					return errors.Wrap(err, "error deleting content")
 				}
+
+				deleted.Add(int64(ci.PackedLength))
+			}
+
+			if cnt%100000 == 0 {
+				contentlog.Log2(ctx, log,
+					"found unused contents so far",
+					logparam.UInt32("count", cnt),
+					logparam.Int64("bytes", totalSize))
+
+				if gcDelete {
+					if err := rep.Flush(ctx); err != nil {
+						return errors.Wrap(err, "flush error")
+					}
+				}
+			}
+
+			return nil
+		})
+
+		if err == content.ErrSortIterationBroken {
+			if err := rep.Flush(ctx); err != nil {
+				return nil, errors.Wrap(err, "flush error")
 			}
 		}
 
-		return nil
-	})
+		break
+	}
 
 	result := buildGCResult(&unused, &inUse, &system, &tooRecent, &undeleted, &deleted)
 
